@@ -55,7 +55,9 @@ async function sourceWebhook(source: JobSource, request: Request) {
   const { webhook } = sourceFor(source);
   if (!webhook) return Response.json({ error: "not found" }, { status: 404 });
   const raw = await request.text();
-  const verdict = webhook.verify(raw, request.headers, process.env[webhook.secretEnv]!);
+  const secret = process.env[webhook.secretEnv];
+  if (!secret) return Response.json({ error: `${webhook.secretEnv} is not set` }, { status: 401 });
+  const verdict = webhook.verify(raw, request.headers, secret);
   if (!verdict.ok) return Response.json({ error: verdict.reason }, { status: 401 });
   const deliveryId = request.headers.get(webhook.deliveryHeader);
   if (!deliveryId) return Response.json({ error: `missing ${webhook.deliveryHeader}` }, { status: 400 });

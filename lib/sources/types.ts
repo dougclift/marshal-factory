@@ -104,6 +104,11 @@ export type FileDraft = {
   labels?: { group: string; name: string }[];
   /** Plain labels by name, outside any group, such as `review`; created on the team when missing. */
   tags?: string[];
+  /**
+   * Which source the panel is filing into. Adapters ignore it; lib/sources/index.ts routes on it.
+   * Unset means the default filing source.
+   */
+  source?: string;
 };
 export type ImageFile = { filename: string; contentType: string; bytes: Uint8Array<ArrayBuffer> };
-export type FiledJob = { key: string; url: string };
+export type FiledJob = { key: string; url: string; /** The job id (`<source>:<external id>`) once the runner claims it. */ id?: string };

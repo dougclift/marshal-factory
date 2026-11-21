@@ -57,6 +57,10 @@ const registry = await readRegistry(db);
 const target = registry.find((r) => r.repo === repo);
 if (!target?.enabled) await finish(false, `${repo} is not an enabled repository`);
 
+if (!config.linearApiKey) {
+  await finish(false, "linearApiKey is not set; the canary files a Linear issue");
+  throw new Error("unreachable");
+}
 const filed = await linearFiler(config.linearApiKey, config.factory.teamKey, config.factory.label)({
   requestId: randomUUID(),
   title: `Canary ${new Date().toISOString().slice(0, 16).replace("T", " ")}: unit converter demo page`,
