@@ -103,7 +103,7 @@ FACTORY_TEAM_KEY=FAC
 FACTORY_LABEL=factory
 ```
 
-Deploy `neon.ts` to `main`, which turns on Neon Auth and deploys the ingest Function. The GitHub App doesn't exist yet; the placeholder above is what `neon.ts` reads instead of `github-app.json`.
+Deploy `neon.ts` to `main`, which turns on Neon Auth, sets Realtime's allowed origins from `preview.realtime.allowedOrigins` (replacing the `*` above), and deploys the ingest Function. The GitHub App doesn't exist yet; the placeholder above is what `neon.ts` reads instead of `github-app.json`.
 
 ```sh
 neon deploy --branch main --env .env.local --no-env-pull
@@ -185,11 +185,14 @@ Import the repo into Vercel as a Next.js project. `vercel.json` already sets the
   - Optional: `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` and `SLACK_OWNER_USER_ID` ([Connecting Slack](#connecting-slack))
 - Set the Ignored Build Step to `[ -z "$DATABASE_URL" ]`, so previews without a database are skipped. To get previews with their own Neon branch, connect Neon's Vercel integration. Each preview then migrates its own branch, and the migration guard stops any preview that points at production.
 
-Deploy, then add the panel's production URL to Neon Auth's trusted domains. This fork's panel is `https://marshal-factory-dougclift.vercel.app`. A new branch has none, and without this sign-up fails with "Create account failed: Invalid origin.":
+Deploy, then add each origin the panel is served from to Neon Auth's trusted domains. This fork's panel is `https://marshal-factory-dougclift.vercel.app` and `https://build.gameday.support`. A new branch has none, and without this sign-up fails with "Create account failed: Invalid origin.":
 
 ```sh
 neon neon-auth domain add https://marshal-factory-dougclift.vercel.app --branch main
+neon neon-auth domain add https://build.gameday.support --branch main
 ```
+
+A custom domain must also be added to `preview.realtime.allowedOrigins` in `neon.ts`, then `neon deploy` run, or live updates from that origin are refused.
 
 Then create your owner account. Sign-up is off by default. The [owner account steps](docs/operations.md#panel-access-and-deploys) turn it on briefly, so you can register with an address from `FACTORY_OWNER_EMAILS` and confirm it with the emailed code.
 
@@ -358,7 +361,7 @@ It waits for Vercel's production deploy (which runs the migrations), stops the r
 - **An issue isn't picked up.** For a Linear issue, check that it is in your team (`teamKey`), has the label, and is in an unstarted state such as Todo, and that the Linear webhook exists under Linear → Settings → API. For a queue job, check that its row is still Todo and still has the factory label (`factory`, unless `FACTORY_LABEL` or `factory.label` says otherwise). Either way, **Repositories** needs at least one repo or `factory.repos` must not be empty. The runner also polls every 90 seconds, so a missed wake-up only delays the job.
 - **Machine shows offline.** The runner isn't sending heartbeats. Check `launchctl list | grep marshal-factory`, then the log. Run `bun runner/index.ts --once` in the live checkout to do one pass by hand and see its output.
 - **Sign-up fails with "Invalid origin."** Neon Auth only accepts sign-ups from its trusted domains, and the panel's domain isn't one of them. Run `neon neon-auth domain add https://<your panel domain> --branch main`, then sign up again. See [the owner account steps](docs/operations.md#panel-access-and-deploys).
-- **The board has no live updates.** Check the three Realtime variables in Vercel. Previews never subscribe to live updates; only production does.
+- **The board has no live updates.** Check the three Realtime variables in Vercel. Previews never subscribe to live updates; only production does. An origin missing from `preview.realtime.allowedOrigins` in `neon.ts` is refused until it is added there and `neon deploy` is run.
 - **A run has no stages or costs.** The target repo's hooks aren't reaching ingest. Check that the files from `install-target` are on the repo's `main`, and that `secret` in your config equals `FACTORY_INGEST_SECRET` in the Function.
 - **You moved the live checkout.** The hooks and the LaunchAgent hold its old path. Run `install-target` for each repo and `install-runner` again.
 - **Repositories shows a repo as failed with "The image build was still running after 45 minutes, so the factory stopped it."** The runner never saw the warm-image build finish, for example because a rollout restarted it while the build ran. Until a new image lands, that repo's jobs run without a warm image (the runner logs `sandbox:warm-image-outdated`), so they clone and install from scratch. Press **Rebuild image** on the repo's Repositories entry; the image builds in a few minutes and the repo returns to Ready. See Freshness in [Onboarding a repository](docs/operations.md#onboarding-a-repository).
