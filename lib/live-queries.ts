@@ -2,7 +2,7 @@ import { createRealtime } from "@neon/realtime/server";
 import { drizzleAdapter } from "@neon/realtime-drizzle";
 import { and, asc, desc, eq, getTableColumns, ne } from "drizzle-orm";
 import { db } from "@/db/client";
-import { agents, auditLog, events, jobEvidence, jobs, machines, runs } from "@/db/schema";
+import { agents, auditLog, events, incomingJobs, jobEvidence, jobs, machines, runs } from "@/db/schema";
 import { isJobKey } from "@/lib/factory";
 import type { JobId } from "@/lib/sources/shapes";
 import { assertOwner } from "@/lib/auth/server";
@@ -66,6 +66,14 @@ export const jobsQuery = () =>
     .select(getTableColumns(jobs))
     .from(jobs)
     .orderBy(desc(jobs.claimed_at))
+    .limit(JOB_LIMIT);
+
+/** Jobs parked in Incoming, oldest first, the way they were added. */
+export const incomingQuery = () =>
+  db
+    .select(getTableColumns(incomingJobs))
+    .from(incomingJobs)
+    .orderBy(asc(incomingJobs.created_at), asc(incomingJobs.id))
     .limit(JOB_LIMIT);
 
 export const machinesQuery = () =>

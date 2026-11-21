@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { startTransition, Suspense, use, useMemo, useOptimistic, useSyncExternalStore, type ComponentProps } from "react";
 import { Button } from "@/components/ui/button";
-import type { AgentRow, AuditRow, EventRow, JobEvidenceRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
+import type { AgentRow, AuditRow, EventRow, IncomingJobRow, JobEvidenceRow, JobRow, MachineRow, RepoSettingsRow, RunRow } from "@/db/schema";
 import { Board } from "./board";
 import { panelCards } from "./cards";
 import { splitArchived } from "@/lib/archive";
@@ -16,6 +16,7 @@ import { reportedHarnesses } from "@/lib/machine";
 import { cn } from "@/lib/utils";
 import { groupBy, spendOf } from "./format";
 import { Inbox } from "./inbox";
+import { IncomingColumn } from "./incoming-column";
 import { FullViewToggle, useEscapeToSidePanel, useFullView } from "./full-view";
 import { JobList } from "./job-list";
 import { JOB_VIEW_COOKIE, jobsHref, type JobView } from "./job-view";
@@ -153,6 +154,7 @@ export function LivePanel({
   archived,
   registry,
   jobs,
+  incoming,
   runs,
   agents,
   machines,
@@ -173,12 +175,15 @@ export function LivePanel({
   /** Where New job can file. Queue is always listed; Linear only when the panel has a key. */
   sources: readonly { source: string; label: string; isDefault: boolean }[];
   jobs: Feed<JobRow>;
+  /** Jobs parked before Queued, for the board's Incoming column. */
+  incoming: Feed<IncomingJobRow>;
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
   machines: Feed<MachineRow>;
   detail: OpenRun | undefined;
 }) {
   const { rows: jobRows } = useFeed(jobs, "/api/live/jobs");
+  const { rows: incomingRows } = useFeed(incoming, "/api/live/incoming");
   const { rows: runRows, status } = useFeed(runs, "/api/live/runs");
   const { rows: agentRows } = useFeed(agents, "/api/live/agents");
   const { rows: machineRows } = useFeed(machines, "/api/live/machines");
@@ -234,6 +239,9 @@ export function LivePanel({
   // Below lg an open run takes the whole width, so the list unmounts like in full view and its row keys stop.
   const wide = useWide();
   const runCovers = runFull || (selectedRun !== undefined && detail !== undefined && !wide);
+  // A draft with no repo goes to the default one.
+  const defaultRepo = registry.find((r) => r.is_default)?.repo ?? null;
+  const shownIncoming = useMemo(() => (repo ? incomingRows.filter((j) => (j.repo ?? defaultRepo) === repo) : incomingRows), [incomingRows, repo, defaultRepo]);
   const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
   const newJob = <NewJobButton harnesses={enabledHarnesses} repos={registry} sources={sources} />;
 
@@ -247,7 +255,14 @@ export function LivePanel({
         return showArchive ? (
           <JobList cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} archived />
         ) : jobView === "board" ? (
-          <Board cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
+          <Board
+            cards={shownCards}
+            agentsBySession={agentsBySession}
+            selected={detail?.sessionId}
+            machines={machineById}
+            repoLabels={repoLabels}
+            incoming={<IncomingColumn jobs={shownIncoming} repoLabels={repoLabels} harnesses={enabledHarnesses} repos={registry} sources={sources} />}
+          />
         ) : (
           <JobList cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
         );

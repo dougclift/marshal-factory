@@ -521,6 +521,31 @@ export const auditLog = pgTable(
   (t) => [index("audit_log_job_at_idx").on(t.job_id, t.at)],
 );
 
+/**
+ * A job the owner parked in Incoming instead of filing. It is the New job form's fields, kept in
+ * the panel until the owner sends it to Queued, which files it in its source under this id as the
+ * request id. Migration 0041.
+ */
+export const incomingJobs = pgTable(
+  "incoming_jobs",
+  {
+    /** The form's request id, so filing it later is the same request a direct filing would be. */
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    description: text("description").notNull(),
+    /** A harness's provider instance id; null leaves it to Settings. */
+    provider: text("provider"),
+    execution: text("execution").$type<Execution>(),
+    /** The repo's full name; null means the default repo. */
+    repo: text("repo"),
+    /** The filing source it goes to; null means the default. Images in the description were stored there. */
+    source: text("source"),
+    created_at: ts("created_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+  },
+  (t) => [index("incoming_jobs_created_idx").on(t.created_at)],
+);
+
 export type EventRow = typeof events.$inferSelect;
 export type RunRow = typeof runs.$inferSelect;
 export type AgentRow = typeof agents.$inferSelect;
@@ -534,3 +559,4 @@ export type AuditRow = typeof auditLog.$inferSelect;
 export type JobEvidenceRow = typeof jobEvidence.$inferSelect;
 export type NotificationSettingsRow = typeof notificationSettings.$inferSelect;
 export type SlackMessageRow = typeof slackMessages.$inferSelect;
+export type IncomingJobRow = typeof incomingJobs.$inferSelect;
