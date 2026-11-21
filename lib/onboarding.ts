@@ -50,11 +50,11 @@ export type RepoImage = z.infer<typeof repoImageSchema>;
 export const runSchema = z.object({
   kind: z.enum(["agent", "build"]),
   machine: z.string(),
-  /** Absent while an agent run holds its slot and its sandbox is being created. */
+  /** Absent while an agent run is recorded and its sandbox is still being created. */
   sandboxId: z.string().optional(),
   startedAt: z.string(),
-  /** The Codex login slot an agent run holds. */
-  slot: z.string().optional(),
+  /** The Codex login an agent run on Codex holds. Absent, or null, when the run is on Claude Code and needs no slot. */
+  slot: z.string().nullish(),
   threadId: z.string().optional(),
   tokenAt: z.string().optional(),
   /** A build of a committed recipe also runs its checks. */
@@ -158,6 +158,7 @@ export function repoImage(row: OnboardingRow | undefined, base: BaseImage | null
 export function stateLine(state: OnboardingState, detail: OnboardingDetail) {
   switch (state) {
     case "analyzing":
+      // An agent run on Claude Code has no slot; the line is the same either way.
       return detail.run?.kind === "agent" ? "An agent is writing the setup recipe" : "Looking for a setup recipe";
     case "needs_input": {
       const missing = detail.missingSecrets ?? [];

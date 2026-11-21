@@ -201,11 +201,12 @@ export const jobs = pgTable(
 );
 
 /**
- * Who holds each Codex login slot: a job or an onboarding agent run. The slot is the primary key,
- * so one holder at a time across both. Triggers from migration 0032 keep it in step with
- * jobs.codex_slot and a repo's onboarding_detail run slot: setting either to a slot someone else
- * holds fails with a unique violation, and clearing it releases the slot. Onboarding records its
- * agent run with the slot before it creates the sandbox; see runner/onboarding.ts.
+ * Who holds each Codex login slot: a job or an onboarding agent run on Codex. The slot is the
+ * primary key, so one holder at a time across both. Triggers from migration 0032 keep it in step
+ * with jobs.codex_slot and a repo's onboarding_detail run slot: setting either to a slot someone
+ * else holds fails with a unique violation, clearing it releases the slot, and a missing or null
+ * slot leases nothing. A Codex onboarding run records its agent run with the slot before it
+ * creates the sandbox; a Claude Code run records no slot. See runner/onboarding.ts.
  */
 export const codexSlotLeases = pgTable(
   "codex_slot_leases",
