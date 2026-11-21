@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { AgentRow, MachineRow, RunRow } from "@/db/schema";
 import { cn } from "@/lib/utils";
 import { STAGES } from "@/lib/events";
@@ -18,6 +19,7 @@ export function Board({
   selected,
   machines,
   repoLabels,
+  incoming,
 }: {
   cards: readonly BoardCard[];
   agentsBySession: Map<string, AgentRow[]>;
@@ -25,6 +27,8 @@ export function Board({
   machines: ReadonlyMap<string, MachineRow>;
   /** Each repo's short name, while more than one repo has jobs; undefined shows no repo. */
   repoLabels?: ReadonlyMap<string, string>;
+  /** The Incoming column, ahead of Queued. */
+  incoming?: ReactNode;
 }) {
   const agentsOf = (runs: readonly RunRow[]) =>
     runs.flatMap((r) => agentsBySession.get(r.session_id) ?? []);
@@ -34,6 +38,7 @@ export function Board({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 divide-x overflow-x-auto overflow-y-hidden">
+      {incoming}
       {columns.map((stage) => {
         const items = cards.filter((c) => c.stage === stage);
         return (

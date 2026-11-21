@@ -6,6 +6,7 @@ import { PanelPageSkeleton } from "@/components/panel/skeletons";
 import { db } from "@/db/client";
 import {
   agentsOverviewQuery,
+  incomingQuery,
   jobAuditQuery,
   jobEvidenceQuery,
   jobsQuery,
@@ -46,8 +47,9 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
   const sessionId = parseSessionId(typeof run === "string" ? run : undefined);
   // Not awaited: the page streams while the run's own feeds load, and the side panel waits for them on its own.
   const detail = sessionId ? { sessionId, data: loadDetail(sessionId) } : undefined;
-  const [jobs, runs, agents, machines, jar] = await Promise.all([
+  const [jobs, incoming, runs, agents, machines, jar] = await Promise.all([
     load(jobsQuery()),
+    load(incomingQuery()),
     load(runsQuery()),
     load(agentsOverviewQuery()),
     load(machinesQuery()),
@@ -64,6 +66,7 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
       archived={view === "jobs" && archived === "1"}
       registry={registry.map((r) => ({ repo: r.repo, display_name: r.display_name, enabled: r.enabled, is_default: r.is_default }))}
       jobs={jobs}
+      incoming={incoming}
       runs={runs}
       agents={agents}
       machines={machines}

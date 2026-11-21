@@ -2,8 +2,10 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ExternalLinkIcon, ImagePlusIcon, PlusIcon, XIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useRef, useState, useTransition, type ClipboardEvent, type DragEvent } from "react";
 import { Controller, useForm } from "react-hook-form";
+import { addIncomingJob, discardIncomingJob, editIncomingJob, queueIncomingJob } from "@/app/actions/incoming";
 import { createJob } from "@/app/actions/new-job";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,7 +25,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "@/c
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { EXECUTIONS, executionSchema } from "@/lib/execution";
-import type { RepoSettingsRow } from "@/db/schema";
+import type { IncomingJobRow, RepoSettingsRow } from "@/db/schema";
 import type { Harness } from "@/lib/harness";
 import { displayName } from "@/lib/repo-name";
 import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
@@ -32,7 +34,31 @@ import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOut
 
 const blank = (source?: string): NewJob => ({ title: "", description: "", requestId: crypto.randomUUID(), ...(source ? { source } : {}) });
 
-type FilingSource = { source: string; label: string; isDefault: boolean };
+/** The form's values for a job in Incoming; its id is the request id it files under. */
+const fromIncoming = (job: IncomingJobRow): NewJob => ({
+  title: job.title,
+  description: job.description,
+  requestId: job.id,
+  ...(job.provider ? { provider: job.provider } : {}),
+  ...(job.execution ? { execution: job.execution } : {}),
+  ...(job.repo ? { repo: job.repo } : {}),
+  ...(job.source ? { source: job.source } : {}),
+});
+
+export type FilingSource = { source: string; label: string; isDefault: boolean };
+
+export type JobFormProps = {
+  harnesses: readonly Harness[];
+  repos: readonly Pick<RepoSettingsRow, "repo" | "display_name" | "enabled" | "is_default">[];
+  sources: readonly FilingSource[];
+};
+
+/** Where a new job lands: parked in Incoming for the owner to edit, or filed for the runner to claim. */
+type Lands = "incoming" | "queued";
+const landsItems: { value: Lands; label: string }[] = [
+  { value: "incoming", label: "Incoming" },
+  { value: "queued", label: "Queued" },
+];
 
 type JobImage = { id: string; name: string; preview: string } & (
   | { status: "uploading" }
@@ -60,15 +86,27 @@ const runsOnItems = [
   ...EXECUTIONS.map((e) => ({ value: e, label: RUNS_ON_LABELS[e] })),
 ];
 
-/** Starts a job by filing it in the source the form picks. The queue is always there; Linear is too when it is configured. */
-export function NewJobButton({ harnesses, repos, sources }: { harnesses: readonly Harness[]; repos: readonly Pick<RepoSettingsRow, "repo" | "display_name" | "enabled" | "is_default">[]; sources: readonly FilingSource[] }) {
-  const defaultSource = sources.find((source) => source.isDefault)?.source ?? sources[0]?.source;
-  const [open, setOpen] = useState(false);
+/** Starts a job: parks it in Incoming, or files it in the source the form picks. The queue is always there; Linear is too when it is configured. */
+export function NewJobButton(props: JobFormProps) {
+  return <JobDialog {...props} />;
+}
+
+/** Edits a job in Incoming, discards it, or sends it to Queued by filing it. */
+export function IncomingJobDialog({ job, onClose, ...props }: JobFormProps & { job: IncomingJobRow; onClose: () => void }) {
+  return <JobDialog {...props} incoming={{ job, onClose }} />;
+}
+
+function JobDialog({ harnesses, repos, sources, incoming }: JobFormProps & { incoming?: { job: IncomingJobRow; onClose: () => void } }) {
+  const router = useRouter();
+  const defaultSource = incoming ? (incoming.job.source ?? undefined) : (sources.find((source) => source.isDefault)?.source ?? sources[0]?.source);
+  const initial = () => (incoming ? fromIncoming(incoming.job) : blank(defaultSource));
+  const [open, setOpen] = useState(incoming !== undefined);
   const [created, setCreated] = useState<Extract<NewJobOutcome, { ok: true }> | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-  const form = useForm<NewJob>({ resolver: zodResolver(newJobSchema), defaultValues: blank(defaultSource) });
+  const form = useForm<NewJob>({ resolver: zodResolver(newJobSchema), defaultValues: initial() });
   const [source, setSource] = useState<string | undefined>(defaultSource);
+  const [lands, setLands] = useState<Lands>("incoming");
   const [images, setImages] = useState<JobImage[]>([]);
   const [dragging, setDragging] = useState(false);
   const repoItems = repos.filter((r) => r.enabled).map((r) => ({ value: r.repo, label: displayName(r) }));
@@ -78,8 +116,9 @@ export function NewJobButton({ harnesses, repos, sources }: { harnesses: readonl
   const uploading = images.some((i) => i.status === "uploading");
 
   const reset = () => {
-    form.reset(blank(defaultSource));
+    form.reset(initial());
     setSource(defaultSource);
+    setLands("incoming");
     setCreated(null);
     setFailure(null);
     setImages((current) => {
@@ -130,28 +169,61 @@ export function NewJobButton({ harnesses, repos, sources }: { harnesses: readonl
     event.preventDefault();
     addImages(files);
   };
+  const close = () => {
+    setOpen(false);
+    incoming?.onClose();
+  };
+  // Without live updates the board shows Incoming as the server last rendered it.
+  const settle = (outcome: { ok: true } | { ok: false; message: string }, then: () => void) => {
+    if (!outcome.ok) return setFailure(outcome.message);
+    router.refresh();
+    then();
+  };
   const submit = form.handleSubmit((values) => {
     setFailure(null);
     startTransition(async () => {
-      const outcome = await createJob(values);
-      if (outcome.ok) setCreated(outcome);
-      else setFailure(outcome.message);
+      if (incoming) settle(await editIncomingJob(values), close);
+      else if (lands === "incoming") settle(await addIncomingJob(values), close);
+      else {
+        const outcome = await createJob(values);
+        if (outcome.ok) setCreated(outcome);
+        else setFailure(outcome.message);
+      }
     });
   });
+  // Saves the edits first, so what is filed is what the form shows.
+  const sendToQueued = form.handleSubmit((values) => {
+    if (!incoming) return;
+    setFailure(null);
+    startTransition(async () => {
+      const saved = await editIncomingJob(values);
+      if (!saved.ok) return setFailure(saved.message);
+      const outcome = await queueIncomingJob(incoming.job.id);
+      settle(outcome, () => outcome.ok && setCreated(outcome));
+    });
+  });
+  const discard = () => {
+    if (!incoming) return;
+    setFailure(null);
+    startTransition(async () => settle(await discardIncomingJob(incoming.job.id), close));
+  };
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
         if (pending) return;
+        if (!next) return close();
         setOpen(next);
-        if (next) reset();
+        reset();
       }}
     >
-      <DialogTrigger render={<Button size="sm" />}>
-        <PlusIcon data-icon="inline-start" />
-        New job
-      </DialogTrigger>
+      {!incoming && (
+        <DialogTrigger render={<Button size="sm" />}>
+          <PlusIcon data-icon="inline-start" />
+          New job
+        </DialogTrigger>
+      )}
       <DialogPopup className="sm:max-w-lg">
         {created ? (
           <>
@@ -166,22 +238,44 @@ export function NewJobButton({ harnesses, repos, sources }: { harnesses: readonl
                 {source === "linear" ? "Open in Linear" : "Open the board"}
                 <ExternalLinkIcon data-icon="inline-end" />
               </Button>
-              <Button onClick={reset}>Start another</Button>
+              {incoming ? <Button onClick={close}>Done</Button> : <Button onClick={reset}>Start another</Button>}
             </DialogFooter>
           </>
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>New job</DialogTitle>
+              <DialogTitle>{incoming ? "Incoming job" : "New job"}</DialogTitle>
               <DialogDescription>
-                {source === "linear"
+                {incoming
+                  ? "Edit it until it is ready. Send to Queued files it, and the factory picks it up like any other job."
+                  : lands === "incoming"
+                    ? "Parks the job in Incoming on the board. The factory leaves it alone until you open it and send it to Queued."
+                    : source === "linear"
                   ? "Files a Linear issue with the factory label. Questions and answers then happen on that issue. A harness or place other than the Settings default goes on the issue as its Harness or Runs on label."
                   : "Files a job in the factory queue. The runner picks it up like any other job. A harness or place other than the Settings default is stored on the job."}
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={submit} className="contents">
               <DialogPanel className="flex flex-col gap-5">
-                {sources.length > 1 && (
+                {!incoming && (
+                  <Field>
+                    <FieldLabel htmlFor="new-job-lands">Lands in</FieldLabel>
+                    <Select items={landsItems} value={lands} onValueChange={(value) => value && setLands(value)}>
+                      <SelectTrigger id="new-job-lands" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectPopup>
+                        {landsItems.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                    <FieldDescription>Incoming waits for you to edit and send it. Queued goes to the factory now.</FieldDescription>
+                  </Field>
+                )}
+                {!incoming && sources.length > 1 && (
                   <Controller
                     name="source"
                     control={form.control}
@@ -386,13 +480,24 @@ export function NewJobButton({ harnesses, repos, sources }: { harnesses: readonl
                 )}
               </DialogPanel>
               <DialogFooter>
+                {incoming && (
+                  <Button type="button" variant="destructive-outline" className="sm:me-auto" disabled={pending} onClick={discard}>
+                    Discard
+                  </Button>
+                )}
                 <DialogClose disabled={pending} render={<Button variant="outline" />}>
                   Cancel
                 </DialogClose>
-                <Button type="submit" disabled={pending || uploading}>
-                  {(pending || uploading) && <Spinner data-icon="inline-start" />}
-                  {uploading ? "Uploading images" : "File job"}
+                <Button type="submit" variant={incoming ? "outline" : "default"} disabled={pending || uploading}>
+                  {(pending || uploading) && !incoming && <Spinner data-icon="inline-start" />}
+                  {uploading ? "Uploading images" : incoming ? "Save" : lands === "incoming" ? "Add to Incoming" : "File job"}
                 </Button>
+                {incoming && (
+                  <Button type="button" disabled={pending || uploading} onClick={sendToQueued}>
+                    {(pending || uploading) && <Spinner data-icon="inline-start" />}
+                    Send to Queued
+                  </Button>
+                )}
               </DialogFooter>
             </form>
           </>
