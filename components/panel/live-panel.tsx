@@ -235,6 +235,7 @@ export function LivePanel({
   const wide = useWide();
   const runCovers = runFull || (selectedRun !== undefined && detail !== undefined && !wide);
   const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
+  const newJob = <NewJobButton harnesses={enabledHarnesses} repos={registry} sources={sources} />;
 
   const meta = viewMeta(view);
   const active = runRows.filter((r) => r.status === "active").length;
@@ -286,10 +287,13 @@ export function LivePanel({
                   {inboxCount} {inboxCount === 1 ? "needs" : "need"} you
                 </Button>
               )}
-              <NewJobButton harnesses={enabledHarnesses} repos={registry} sources={sources} />
+              {newJob}
             </>
           ) : view === "inbox" ? (
-            repoSelect
+            <>
+              {repoSelect}
+              {newJob}
+            </>
           ) : undefined
         }
       />
