@@ -1,0 +1,15 @@
+{
+  "runtimes": { "bun": "1.4.4" },
+  "setup": ["bun install --frozen-lockfile"],
+  "checks": { "lint": "bun run lint", "build": "bun run build" },
+  "env": [
+    { "name": "DATABASE_URL", "purpose": "a non-production Neon branch for sandbox builds", "required": true },
+    { "name": "NEON_AUTH_COOKIE_SECRET", "purpose": "random 32-byte cookie secret for builds", "required": true },
+    {
+      "name": "NEON_REALTIME_SECRET",
+      "purpose": "Neon Realtime secret (nrt_live_1 plus a 32-byte key) the non-preview build uses to construct the live-query client",
+      "required": true
+    }
+  ],
+  "warmKey": ["bun.lock", "package.json"]
+}
