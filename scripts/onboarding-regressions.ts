@@ -9,7 +9,7 @@ import type { OnboardingDetail } from "../lib/onboarding";
 import { fake, fakeModal, sandboxes, type FakeSandbox } from "./fake-modal";
 
 const { db } = await import("../db/client");
-const { codexSlotLeases, intents, jobs, repoSettings } = await import("../db/schema");
+const { codexSlotLeases, intents, jobs, repoSettings, settings } = await import("../db/schema");
 type RepoRow = typeof repoSettings.$inferSelect;
 const { linearJob } = await import("./fixtures");
 const { jobId } = await import("../lib/sources/shapes");
@@ -19,12 +19,13 @@ const recipes = await import("../lib/recipe");
 const { recipeHash } = await import("../lib/recipe-hash");
 const onboarding = await import("../lib/onboarding");
 const actions = await import("../lib/repo-onboarding");
-const { pinnedVersions, REPO_DIR, GITHUB_TOKEN_PATH } = await import("../lib/sandbox");
+const { pinnedVersions, REPO_DIR, GITHUB_TOKEN_PATH, CODEX_AUTH } = await import("../lib/sandbox");
 const { githubPushIntent } = await import("../lib/webhooks");
 const { config } = await import("../runner/ops");
 const { threads } = await import("../runner/threads");
 const { sandboxRuntime } = await import("../runner/sandbox");
 const { launchInSandboxes, sandboxStart } = await import("../runner/launch");
+const { readSettings, SETTINGS_ID, writeSettings } = await import("../lib/settings");
 const runner = await import("../runner/onboarding");
 const { ORPHAN_LEASE_MS, releaseOrphanLeases } = await import("../runner/lifecycle");
 
@@ -138,6 +139,9 @@ assert.deepEqual(sandboxStart(repoRow("a/b", "ready", { image: warmImage }), { .
 assert.deepEqual(onboarding.afterRecipe({ ...recipe, env: [{ name: "K", purpose: "p", required: true }] }, {}), { state: "needs_input", missingSecrets: ["K"] });
 assert.deepEqual(onboarding.afterRecipe({ ...recipe, env: [{ name: "K", purpose: "p", required: false }] }, {}), { state: "building", missingSecrets: [] }, "an optional env var never blocks");
 assert.deepEqual(onboarding.afterRecipe(recipe, { image: warmImage }), { state: "rebuilding", missingSecrets: [] });
+assert.equal(onboarding.stateLine("analyzing", { run: { kind: "agent", machine: "m", startedAt: "t" } }), "An agent is writing the setup recipe", "the panel shows an agent run that holds no Codex slot");
+assert.equal(onboarding.stateLine("analyzing", { run: { kind: "agent", machine: "m", startedAt: "t", slot: null } }), "An agent is writing the setup recipe", "and one whose slot is null");
+assert.equal(onboarding.parseDetail({ run: { kind: "agent", machine: "m", startedAt: "t", slot: null } }).run?.kind, "agent", "a null slot does not throw the run away");
 
 // The push webhook names the repo and what changed.
 const push = githubPushIntent("push", {
@@ -480,6 +484,80 @@ try {
   await db.update(jobs).set({ codex_slot: slotA }).where(eq(jobs.key, raceKey));
   assert.deepEqual(await releaseOrphanLeases(Date.now() + 2 * ORPHAN_LEASE_MS), [], "a lease its job still records stays");
   await db.update(jobs).set({ codex_slot: null }).where(eq(jobs.key, raceKey));
+
+  // The harness is chosen before a slot is claimed. Claude Code with a token needs none; Codex still
+  // needs one; Claude without a token falls back to Codex and needs one too.
+  const savedSettings = await readSettings(db);
+  const savedSlots = sandboxRuntime.slots;
+  const savedToken = sandboxRuntime.claudeToken;
+  const setHarness = (provider: string, model: string) =>
+    writeSettings(db, { provider, model, ...(savedSettings && { execution: savedSettings.execution }) }, "test", new Date());
+  const quiet = (repo: string) => db.update(repoSettings).set({ enabled: false, onboarding_detail: {} }).where(eq(repoSettings.repo, repo));
+  try {
+    const CLAUDE = `${NS}/claude`;
+    sandboxRuntime.slots = () => [];
+    sandboxRuntime.claudeToken = () => "claude-oauth-token";
+    await setHarness("claudeAgent", "claude-opus-5-5");
+    await insert(CLAUDE, "analyzing");
+    assert.deepEqual(await runner.onboardRepo(CLAUDE), { repo: CLAUDE, agent: "thread-onb" });
+    d = await detail(CLAUDE);
+    assert.equal((await row(CLAUDE)).onboarding_state, "analyzing");
+    assert.equal(d.run?.slot, undefined, "a Claude Code run holds no Codex slot");
+    assert.deepEqual(await leases(), [], "and leases nothing");
+    assert.equal(onboarding.stateLine("analyzing", d), "An agent is writing the setup recipe");
+    const claudeBox = sandboxOf(d.run?.sandboxId);
+    const claudeExec = claudeBox.execs.find((e) => e.argv.slice(0, 3).join(" ") === "t3 thread start")!;
+    assert.deepEqual([claudeExec.argv[claudeExec.argv.indexOf("--provider") + 1], claudeExec.argv[claudeExec.argv.indexOf("--model") + 1]], ["claudeAgent", "claude-opus-5-5"]);
+    assert.equal(claudeBox.files.has(CODEX_AUTH), false, "no Codex login is installed");
+    assert.equal(claudeBox.spec!.secrets.CLAUDE_CODE_OAUTH_TOKEN, "claude-oauth-token");
+    threadState = "stopped";
+    claudeBox.files.set(runner.ONBOARDING_RESULT, JSON.stringify({ recipe: { ...valid, env: [{ name: "API_KEY", purpose: "p", required: true }] }, summary: "Claude wrote it." }));
+    await runner.advanceOnboarding({ only: [CLAUDE] });
+    d = await detail(CLAUDE);
+    assert.deepEqual([(await row(CLAUDE)).onboarding_state, d.run, await leases()], ["needs_input", undefined, []], "ending the run needs no slot to hand back");
+    assert.equal(claudeBox.terminated, true);
+    threadState = "running";
+
+    const CODEX = `${NS}/codex-slot`;
+    await setHarness("codex", "gpt-6-astra");
+    await insert(CODEX, "analyzing");
+    await assert.rejects(runner.onboardRepo(CODEX), /no free Codex login slot for the onboarding run \(codex \/ gpt-6-astra\); it retries/);
+    assert.deepEqual([(await row(CODEX)).onboarding_state, (await detail(CODEX)).run, await leases()], ["analyzing", undefined, []], "a Codex run with no free slot retries and records nothing");
+
+    const FALLBACK = `${NS}/fallback`;
+    await setHarness("claudeAgent", "claude-opus-5-5");
+    sandboxRuntime.claudeToken = () => undefined;
+    await insert(FALLBACK, "analyzing");
+    await assert.rejects(runner.onboardRepo(FALLBACK), (error: unknown) => {
+      const text = error instanceof Error ? error.message : String(error);
+      assert.match(text, /no free Codex login slot for the onboarding run/);
+      assert.match(text, /this runner has no CLAUDE_CODE_OAUTH_TOKEN/);
+      assert.ok(text.includes(`launching on codex / ${config.factory.sandbox.codexModel}`), text);
+      return true;
+    });
+    assert.equal((await detail(FALLBACK)).run, undefined, "Claude without a token does not start until a Codex slot is free");
+    sandboxRuntime.slots = () => [slotA];
+    assert.deepEqual(await runner.onboardRepo(FALLBACK), { repo: FALLBACK, agent: "thread-onb" });
+    d = await detail(FALLBACK);
+    assert.equal(d.run?.slot, slotA, "the fallback leases a Codex slot");
+    assert.deepEqual(await leases(), [[slotA, "onboarding", FALLBACK]]);
+    const fallbackExec = sandboxOf(d.run?.sandboxId).execs.find((e) => e.argv.slice(0, 3).join(" ") === "t3 thread start")!;
+    assert.deepEqual(
+      [fallbackExec.argv[fallbackExec.argv.indexOf("--provider") + 1], fallbackExec.argv[fallbackExec.argv.indexOf("--model") + 1]],
+      ["codex", config.factory.sandbox.codexModel],
+    );
+    assert.equal(sandboxOf(d.run?.sandboxId).files.has(CODEX_AUTH), true, "and installs that slot's login");
+    await quiet(FALLBACK);
+    await db.delete(codexSlotLeases).where(eq(codexSlotLeases.slot, slotA));
+    await quiet(CODEX);
+    await quiet(CLAUDE);
+  } finally {
+    threadState = "running";
+    sandboxRuntime.slots = savedSlots;
+    sandboxRuntime.claudeToken = savedToken;
+    if (savedSettings) await writeSettings(db, { provider: savedSettings.provider, model: savedSettings.model, execution: savedSettings.execution }, savedSettings.updated_by, savedSettings.updated_at);
+    else await db.delete(settings).where(eq(settings.id, SETTINGS_ID));
+  }
 
   // Secrets: the value goes to the store and nowhere else; the names are recorded and the build starts.
   console.log = (...args: unknown[]) => void logged.push(args.map(String).join(" "));

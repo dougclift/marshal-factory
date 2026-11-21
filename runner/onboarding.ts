@@ -45,7 +45,7 @@ import { thisMachine } from "./heartbeat";
 import { startThread } from "./launch";
 import { launchSettings } from "./ops";
 import { leasedSlots, loginFailed, TOKEN_REFRESH_MS, uniqueViolation, writeBackLogin } from "./lifecycle";
-import { CodexLoginError, sandboxHarness, sandboxRuntime, sandboxSecrets, setupSandbox, usableSlots, writeGithubToken } from "./sandbox";
+import { CodexLoginError, needsCodexSlot, sandboxHarness, sandboxRuntime, sandboxSecrets, setupSandbox, usableSlots, writeGithubToken, type CodexLogin } from "./sandbox";
 import { threads } from "./threads";
 
 // Runs a repo's onboarding on Modal, tracked on its registry row rather than as a job. Each step is
@@ -55,8 +55,9 @@ import { threads } from "./threads";
 //             agent run: a sandbox from the base image, T3 started as for a job, one thread on the
 //             Settings harness with playbooks/onboarding.md, which commits the recipe on
 //             factory/onboarding, opens its PR and writes ONBOARDING_RESULT
-//   agent     the tick waits for the thread to settle, reads the result, hands the login back and
-//             ends the sandbox; the recipe then needs secrets (needs_input) or goes to building
+//   agent     the tick waits for the thread to settle, reads the result, hands a Codex login back
+//             when the run holds one and ends the sandbox; the recipe then needs secrets
+//             (needs_input) or goes to building
 //   build     a sandbox from the base image clones origin/main, installs and sets up in the
 //             background; once it exits 0 the token and the build files go, the filesystem is
 //             snapshotted to the repo's warm image, and the old image is deleted
@@ -120,7 +121,7 @@ async function fail(repo: string, reason: string, logText?: string) {
   return { repo, failed: reason };
 }
 
-/** Ends the run's sandbox, handing an agent's login back to its slot first, and clears the run. */
+/** Ends the run's sandbox, handing a Codex login back to its slot when the run holds one, and clears the run. */
 async function endRun(repo: string, run: StartedRun) {
   if (run.slot) await writeBackLogin(`onboard:${repo}`, run.sandboxId, run.slot);
   await terminateSandbox(run.sandboxId);
@@ -172,9 +173,10 @@ async function claimRun(repo: string, run: OnboardingRun, state?: OnboardingStat
 const secretsFor = (repo: string, detail: OnboardingDetail) => ((detail.secretsSet ?? []).length > 0 ? [modalSecretName(repo)] : []);
 
 /**
- * Records an agent run holding a free Codex login slot, before its sandbox exists. The trigger on
- * repo_settings leases the slot in the same write, so a lease never outlives its run: clearing
- * the run frees it. "taken" when another run is on the row; undefined when every slot is held.
+ * Records a Codex agent run holding a free login slot, before its sandbox exists. The trigger on
+ * repo_settings leases that slot in the same write, so a lease never outlives its run: clearing
+ * the run frees it. A run with no slot leases nothing. "taken" when another run is on the row;
+ * undefined when every slot is held.
  */
 async function claimSlot(repo: string, machine: string): Promise<OnboardingRun | "taken" | undefined> {
   const held = await leasedSlots();
@@ -189,9 +191,18 @@ async function claimSlot(repo: string, machine: string): Promise<OnboardingRun |
   return undefined;
 }
 
-/** The same agent run, still waiting for its sandbox. */
+/**
+ * Records an agent run that holds no Codex slot, before its sandbox exists. Claude Code logs in
+ * with the runner's token and needs no slot. "taken" when another run is already on the row.
+ */
+async function claimOpen(repo: string, machine: string): Promise<OnboardingRun | "taken"> {
+  const run: OnboardingRun = { kind: "agent", machine, startedAt: onboardingRuntime.now().toISOString() };
+  return (await claimRun(repo, run, "analyzing")) ? run : "taken";
+}
+
+/** The same agent run, still waiting for its sandbox. A missing slot and a null one are the same run. */
 const sameLeasing = (a: OnboardingRun | undefined, b: OnboardingRun) =>
-  a !== undefined && a.sandboxId === undefined && a.kind === b.kind && a.machine === b.machine && a.startedAt === b.startedAt && a.slot === b.slot;
+  a !== undefined && a.sandboxId === undefined && a.kind === b.kind && a.machine === b.machine && a.startedAt === b.startedAt && (a.slot ?? undefined) === (b.slot ?? undefined);
 
 /**
  * An agent run this runner recorded but has no start going for: it restarted while creating the
@@ -246,19 +257,32 @@ export async function onboardRepo(repo: string) {
   return startAgent(repo, parsed && !parsed.ok ? parsed.error : undefined);
 }
 
+/** The Settings harness as a sandbox can run it: Claude Code when this runner has a token, else Codex. */
+async function harnessForAgent() {
+  const { harness } = await launchSettings();
+  return sandboxHarness(harness, sandboxRuntime.driverOf(harness.provider), Boolean(sandboxRuntime.claudeToken()), config.factory.sandbox.codexModel);
+}
+
 async function startAgent(repo: string, committedError: string | undefined) {
   const base = launchable();
   if ("problem" in base) return fail(repo, `The onboarding cloud sandbox cannot start: ${base.problem}.`);
   starting.add(repo);
   try {
-    const leasing = await claimSlot(repo, (await thisMachine()).id);
+    // The harness decides the lease. A Claude Code run holds no slot; leasing first would stick
+    // every repo in analyzing on a runner that has a Claude token and no Codex login.
+    const picked = await harnessForAgent();
+    const machine = (await thisMachine()).id;
+    const leasing = needsCodexSlot(picked.choice.provider) ? await claimSlot(repo, machine) : await claimOpen(repo, machine);
     if (leasing === "taken") return { repo, skipped: "another run started" };
-    if (!leasing) throw new Error("no free Codex login slot for the onboarding run; it retries");
+    if (!leasing) {
+      const why = picked.fallback ?? `${picked.choice.provider} / ${picked.choice.model}`;
+      throw new Error(`no free Codex login slot for the onboarding run (${why}); it retries`);
+    }
     const created = await agentSandbox(repo, leasing, base.image).catch(async (error: unknown) => {
       await clearLeasing(repo, leasing);
       throw error;
     });
-    return created ? await runAgent(repo, created.run, created.host, committedError) : { repo, skipped: "another run started" };
+    return created ? await runAgent(repo, created.run, created.host, committedError, picked) : { repo, skipped: "another run started" };
   } finally {
     starting.delete(repo);
   }
@@ -276,22 +300,51 @@ async function agentSandbox(repo: string, leasing: OnboardingRun, image: Sandbox
   return { run, host: created.host };
 }
 
-async function runAgent(repo: string, run: StartedRun, host: JobHost, committedError: string | undefined) {
+/**
+ * A Claude Code run whose token the sandbox refuses falls back to Codex and takes a slot then,
+ * the same way a job does. Undefined when none is free. The run object learns the slot so the
+ * login is handed back and a later write of the run keeps the lease.
+ */
+async function leaseFallbackSlot(repo: string, run: StartedRun): Promise<CodexLogin | undefined> {
+  const held = await leasedSlots();
+  for (const slot of usableSlots(config.factory.sandbox).filter((s) => !held.has(s))) {
+    try {
+      const updated = await update(repo, (_row, detail) => {
+        if (detail.run?.sandboxId !== run.sandboxId || detail.run.slot) return null;
+        return { detail: { ...detail, run: { ...detail.run, slot } } };
+      });
+      if (!updated) return undefined;
+      run.slot = slot;
+      return { slot, auth: sandboxRuntime.slotAuth(slot) };
+    } catch (error) {
+      if (!uniqueViolation(error)) throw error;
+    }
+  }
+  return undefined;
+}
+
+async function runAgent(repo: string, run: StartedRun, host: JobHost, committedError: string | undefined, picked: Awaited<ReturnType<typeof harnessForAgent>>) {
   const limits = config.factory.sandbox;
-  const slot = run.slot!;
   try {
-    const { harness } = await launchSettings();
     const claudeToken = sandboxRuntime.claudeToken();
-    const { choice } = sandboxHarness(harness, sandboxRuntime.driverOf(harness.provider), Boolean(claudeToken), limits.codexModel);
     const [row] = await db.select().from(repoSettings).where(eq(repoSettings.repo, repo));
     const detail = parseDetail(row?.onboarding_detail);
     const githubToken = await sandboxRuntime.githubToken(repo as RepoName);
-    const setup = { repo, choice, hasClaude: Boolean(claudeToken), codex: { slot, auth: sandboxRuntime.slotAuth(slot) }, githubToken, ingest: null };
+    const setup = {
+      repo,
+      choice: picked.choice,
+      hasClaude: Boolean(claudeToken),
+      codex: run.slot ? { slot: run.slot, auth: sandboxRuntime.slotAuth(run.slot) } : null,
+      leaseCodex: () => leaseFallbackSlot(repo, run),
+      githubToken,
+      ingest: null,
+    };
     const outcome = await setupSandbox(host, setup, limits.codexModel);
     await host.run("mkdir", ["-p", BUILD_DIR], { timeoutMs: 30_000 });
     const threadId = await startThread(host, REPO_DIR, ONBOARDING_BRANCH, `Onboard ${repo}`, agentMessage(repo, detail, committedError), outcome.choice);
     await update(repo, (_r, d) => (d.run?.sandboxId === run.sandboxId ? { detail: { ...d, run: { ...run, threadId } } } : null));
-    log("onboarding:agent-started", { repo, sandbox: run.sandboxId, threadId, harness: outcome.choice });
+    const fallback = outcome.fallback ?? picked.fallback;
+    log("onboarding:agent-started", { repo, sandbox: run.sandboxId, threadId, harness: outcome.choice, ...(fallback && { fallback }) });
     return { repo, agent: threadId };
   } catch (error) {
     if (error instanceof CodexLoginError) await loginFailed(`onboard:${repo}`, error.slot);
