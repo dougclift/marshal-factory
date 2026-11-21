@@ -26,7 +26,7 @@ import {
   type DefaultRepoInput,
   type RepositoryInput,
 } from "@/lib/repositories";
-import { panelSource } from "@/lib/sources";
+import { syncPanelLabels } from "@/lib/sources";
 
 const user = async () => (await auth.getSession()).data?.user;
 const registry = () => readRegistry(db);
@@ -54,7 +54,7 @@ export async function addableRepositories() {
 }
 
 export async function addRepository(input: { repo: string }) {
-  return add({ user, registry, installable, create: (repo, by) => writeNewRepository(db, repo, by, new Date()), syncLabels: (groups) => panelSource().panelSyncLabelGroups!(groups) }, input);
+  return add({ user, registry, installable, create: (repo, by) => writeNewRepository(db, repo, by, new Date()), syncLabels: (groups) => syncPanelLabels(groups) }, input);
 }
 
 export async function saveRepositorySecrets(input: SecretsInput) {

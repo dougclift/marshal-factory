@@ -1,14 +1,14 @@
 import { isOwner, type SessionUser } from "@/lib/auth/owner";
 import type { Harness } from "@/lib/harness";
 import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOutcome, type NewJobOutcome } from "@/lib/new-job-schema";
+import { defaultFilingSource, filingSources } from "@/lib/sources";
 import type { FileDraft, FiledJob, ImageFile } from "@/lib/sources/types";
 import { defaultRepo, repoLabel, REPOSITORY_GROUP, type Registry } from "@/lib/repositories";
 import { HARNESS_GROUP, RUNS_ON_GROUP, RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 
-// A job started from the panel is filed in its source like any other: for Linear, a Todo issue with
-// the factory label that the webhook brings to the runner. Questions, stops and write-back then
-// work as they do for an issue filed by hand. A harness or execution chosen in the form goes on the
-// issue as the same override label a person would add, and so does the repo, default or not.
+// A job started from the panel is filed in the source the form picked. Linear files a Todo issue
+// with the factory label; the queue stores the same job in Postgres. Either way the runner claims
+// it. A harness, place or repo chosen in the form is an override label, default or not.
 
 export type NewJobDeps = {
   user: () => Promise<SessionUser | null | undefined>;
@@ -18,11 +18,14 @@ export type NewJobDeps = {
   registry: () => Promise<Registry>;
 };
 
-export async function createJob(deps: NewJobDeps, input: unknown): Promise<NewJobOutcome> {
-  if (!isOwner(await deps.user())) return { ok: false, status: 403, message: "Only the factory owner can start jobs." };
+export async function fileNewJob(deps: Omit<NewJobDeps, "user">, input: unknown): Promise<NewJobOutcome> {
   const parsed = newJobSchema.safeParse(input);
   if (!parsed.success) return { ok: false, status: 400, message: parsed.error.issues[0]?.message ?? "The job is not valid." };
-  const { provider, execution, repo, ...draft } = parsed.data;
+  const { provider, execution, repo, source: requested, ...draft } = parsed.data;
+  const source = requested ?? defaultFilingSource();
+  if (!filingSources().some((choice) => choice.source === source)) {
+    return { ok: false, status: 400, message: source === "linear" ? "Linear is not configured." : `${source} is not a source the panel can file to.` };
+  }
   const labels: NonNullable<FileDraft["labels"]> = [];
   const registry = await deps.registry();
   const target = repo ? registry.find((r) => r.repo === repo) : defaultRepo(registry);
@@ -35,11 +38,16 @@ export async function createJob(deps: NewJobDeps, input: unknown): Promise<NewJo
   }
   if (execution) labels.push({ group: RUNS_ON_GROUP, name: RUNS_ON_LABELS[execution] });
   try {
-    const filed = await deps.file({ ...draft, ...(labels.length > 0 && { labels }) });
-    return { ok: true, identifier: filed.key, url: filed.url };
+    const filed = await deps.file({ ...draft, source, ...(labels.length > 0 && { labels }) });
+    return { ok: true, identifier: filed.key, url: filed.url, ...(filed.id ? { id: filed.id } : {}) };
   } catch (error) {
     return { ok: false, status: 502, message: `Could not file the job: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+export async function createJob(deps: NewJobDeps, input: unknown): Promise<NewJobOutcome> {
+  if (!isOwner(await deps.user())) return { ok: false, status: 403, message: "Only the factory owner can start jobs." };
+  return fileNewJob(deps, input);
 }
 
 export type ImageUploadDeps = {

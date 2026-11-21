@@ -22,7 +22,8 @@ export async function proxy(request: NextRequest) {
 }
 
 // Each exclusion ends at a path boundary, or at the .rsc and .segments/ suffixes Next adds for prerendered pages.
-// Slack's routes have no session; each checks Slack's signature itself.
+// Slack's routes have no session; each checks Slack's signature itself. /api/jobs/file checks the ingest secret.
+// The exclusion is the file path only, so /api/jobs/images and /api/jobs/<key>/… stay behind the session.
 export const config = {
-  matcher: ["/((?!(?:auth/sign-in|auth/sign-up|auth/forbidden|api/auth|api/slack|_next/static|_next/image|favicon\\.ico)(?:/|$|\\.rsc$|\\.segments/)).*)"],
+  matcher: ["/((?!(?:auth/sign-in|auth/sign-up|auth/forbidden|api/auth|api/slack|api/jobs/file|_next/static|_next/image|favicon\\.ico)(?:/|$|\\.rsc$|\\.segments/)).*)"],
 };

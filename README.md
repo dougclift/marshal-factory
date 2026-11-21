@@ -1,8 +1,8 @@
 # marshal-factory
 
-A software factory that turns Linear issues into pull requests while you watch.
+A software factory that turns tasks into pull requests while you watch.
 
-You label an issue in Linear, file one from the panel, or send one from Slack. A runner on your Mac picks it up within seconds and starts a [T3 Code](https://github.com/pingdotgg/t3code) thread for it on its own branch, `factory/<issue>`, either on the Mac itself or in its own [Modal](https://modal.com) sandbox in the cloud. The thread runs a harness (Claude Code, Codex, or another agent T3 offers, such as Cursor) with PStack, and works the issue on its own: triage, investigation, implementation, verification, and a pull request. Every stage, subagent, model and dollar spent streams live to a web panel, and Slack tells you when something needs you. When the agent needs a decision, it asks on the Linear issue and continues once you reply.
+You file a job from the panel, over HTTP, or from Slack, and, when Linear is configured, by labeling an issue. A runner on your Mac picks it up within seconds and starts a [T3 Code](https://github.com/pingdotgg/t3code) thread for it on its own branch, `factory/<key>`, either on the Mac itself or in its own [Modal](https://modal.com) sandbox in the cloud. The thread runs a harness (Claude Code, Codex, or another agent T3 offers, such as Cursor) with PStack, and works the job on its own: triage, investigation, implementation, verification, and a pull request. Every stage, subagent, model and dollar spent streams live to a web panel, and Slack tells you when something needs you. When the agent needs a decision, it asks on the job and continues once you reply.
 
 When the PR is ready, the agent reports whether it is confident it built what the issue asked for. In repos you switch to **Merge when confident**, the factory merges every PR the agent is confident about and that clears the hard limits (green checks, no conflicts, no open Bugbot findings, checks verified at the PR head), and reverts a merge that turns main red. Everything else is handed to you to review and merge from the panel, Slack or GitHub ([Merge decisions](docs/operations.md#merge-decisions)).
 
@@ -11,7 +11,7 @@ When the PR is ready, the agent reports whether it is confident it built what th
 The pieces:
 
 - **Panel** (`app/`, `components/`): a Next.js app on Vercel. Its **Jobs** page shows every job as a board or a list (the header's Board/List switch; the panel remembers your pick), with each run's timeline and cost in a side panel you can expand to full view. **Inbox** lists what needs you: questions, PRs to review, failures. The panel files jobs and approves merges. Only the owner can sign in.
-- **Ingest Function** (`functions/ingest/`): a Neon Function that receives the Linear and GitHub webhooks and the reporter's events, and writes them to Postgres.
+- **Ingest Function** (`functions/ingest/`): a Neon Function that receives GitHub webhooks, Linear webhooks when Linear is configured, and the reporter's events, and writes them to Postgres.
 - **Runner** (`runner/`): a Bun daemon on your Mac, run by launchd. It is the only part that touches T3, git and the GitHub API, starts and hibernates the Modal sandboxes, makes every merge, and posts the Slack notifications.
 - **Slack app** (`app/api/slack/`, optional): notifications, buttons to answer, merge or request changes, and `/factory` to file jobs. The routes run on Vercel and act through the same inbox actions as the panel.
 - **Reporter** (`hooks/`, `mcp/`): Claude Code hooks and a small MCP server, installed into each target repo. They send the run's progress to the ingest Function.
@@ -21,8 +21,8 @@ The pieces:
 
 Accounts:
 
-- **Linear**, with a team for factory work and a personal API key.
 - **GitHub**, for the target repo and a GitHub App the setup creates for you.
+- **Linear** (optional). Without it, jobs live in the factory's own queue in Postgres. With it, labeling an issue still works, and New job can file there too.
 - **Neon**, for Postgres, Auth, Realtime and the ingest Function.
 - **Vercel**, for the panel.
 - Optional: **Modal**, to run jobs in cloud sandboxes ([Running jobs in Modal sandboxes](#running-jobs-in-modal-sandboxes)), and **Slack**, for notifications and acting from Slack ([Connecting Slack](#connecting-slack)).
@@ -50,12 +50,16 @@ bun install
 
 Fork the repo first if you want Vercel to deploy your copy. This checkout is the **live checkout**. The runner, and the hooks installed into your target repos, run code straight from this path. Keep it on `main` and don't move it. Do development work in a separate clone or worktree.
 
-### 2. Change the two values tied to the original setup
+### 2. Values tied to this fork
 
-- `scripts/setup-github-app.ts`: change the manifest's `name` (`marshal-factory-ski043`) and `url`. GitHub App names are unique across GitHub, so you need your own, such as `marshal-factory-<you>`.
-- `lib/migrate-guard.ts`: `PRODUCTION_ENDPOINTS` names the production database endpoint, so a preview build can never migrate production. You fill it in at step 4.
+This checkout already names its own GitHub App and production database:
 
-### 3. Prepare Linear
+- `scripts/setup-github-app.ts`: the manifest `name` is `marshal-factory-dougclift` and `url` is `https://github.com/dougclift/marshal-factory`.
+- `lib/migrate-guard.ts`: `PRODUCTION_ENDPOINTS` includes `ep-young-lab-bdupe8pr`, this fork's production compute endpoint, so a preview build cannot migrate production. Add an id there if the production branch gains another endpoint.
+
+### 3. Linear (optional)
+
+Skip this step to run without Linear. Jobs then live in the factory's queue. Come back to it later if you want Linear as a second source.
 
 In the Linear team you want the factory to work in:
 
@@ -81,33 +85,41 @@ Create `.env.local` with the secrets you choose yourself:
 ```sh
 cat > .env.local <<EOF
 FACTORY_INGEST_SECRET=$(openssl rand -hex 32)
-LINEAR_WEBHOOK_SECRET=$(openssl rand -hex 32)
 NEON_AUTH_COOKIE_SECRET=$(openssl rand -base64 32)
 FACTORY_OWNER_EMAILS=you@example.com
-LINEAR_API_KEY=<your Linear API key>
-FACTORY_TEAM_KEY=FAC
-FACTORY_LABEL=factory
+# neon env pull and neon deploy evaluate neon.ts. Until the GitHub App exists, this
+# placeholder keeps them from reading github-app.json. Step 6 replaces it.
+GITHUB_APP_WEBHOOK_SECRET=pending
 EOF
 chmod 600 .env.local
 ```
 
-Deploy `neon.ts` to `main`, which turns on Neon Auth and deploys the ingest Function. The GitHub App doesn't exist yet, so pass a placeholder for its webhook secret. Step 6 replaces it.
+Add these only if you prepared Linear in step 3. Leave them out otherwise:
 
 ```sh
-GITHUB_APP_WEBHOOK_SECRET=pending neon deploy --branch main --env .env.local --no-env-pull
+LINEAR_API_KEY=<your Linear API key>
+LINEAR_WEBHOOK_SECRET=$(openssl rand -hex 32)
+FACTORY_TEAM_KEY=FAC
+FACTORY_LABEL=factory
 ```
 
-Pull the values Neon generated (connection strings, Auth, Realtime, and the Function's URL), then create the tables:
+Deploy `neon.ts` to `main`, which turns on Neon Auth and deploys the ingest Function. The GitHub App doesn't exist yet; the placeholder above is what `neon.ts` reads instead of `github-app.json`.
 
 ```sh
-neon env pull --branch main
+neon deploy --branch main --env .env.local --no-env-pull
+```
+
+Pull the values Neon generated, then create the tables. `neon env pull` evaluates `neon.ts`, so the placeholder has to be set for that process too (it is already in `.env.local`; the prefix covers a CLI that evaluates the file before reading it):
+
+```sh
+GITHUB_APP_WEBHOOK_SECRET=pending neon env pull --branch main
 echo "NEXT_PUBLIC_NEON_REALTIME_URL=$(grep '^NEON_REALTIME_URL=' .env.local | cut -d= -f2-)" >> .env.local
 bun run db:migrate
 ```
 
-`.env.local` now also holds `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `NEON_REALTIME_URL`, `NEON_REALTIME_SECRET` and `NEON_FUNCTION_INGEST_BASE_URL`.
+`.env.local` now also holds `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `NEON_AUTH_BASE_URL`, `NEON_REALTIME_URL`, `NEON_REALTIME_SECRET`, `NEON_BRANCH_ID` and `NEON_FUNCTION_HOST_SUFFIX`. The ingest Function's origin is `https://<NEON_BRANCH_ID>-ingest<NEON_FUNCTION_HOST_SUFFIX>` (the suffix looks like `.compute.c-2.us-east-2.aws.neon.tech`). A pull from an older CLI may instead have written `NEON_FUNCTION_INGEST_BASE_URL`; scripts use that value when it is set.
 
-Finally, put the production endpoint id into `PRODUCTION_ENDPOINTS` in `lib/migrate-guard.ts`. It is the `ep-…` part of the host in `DATABASE_URL`, without `-pooler`.
+`PRODUCTION_ENDPOINTS` already lists `ep-young-lab-bdupe8pr`. You do not need to edit it for this project.
 
 ### 5. Write the runner's config
 
@@ -116,13 +128,18 @@ The runner and the reporter read `~/.config/marshal-factory/config.json`:
 ```sh
 mkdir -p ~/.config/marshal-factory
 set -a; source .env.local; set +a
-jq -n --arg key "$LINEAR_API_KEY" --arg url "$NEON_FUNCTION_INGEST_BASE_URL/ingest" --arg secret "$FACTORY_INGEST_SECRET" \
-  '{linearApiKey: $key, ingestUrl: $url, secret: $secret, factory: {teamKey: "FAC", label: "factory"}}' \
+if [ -n "${NEON_FUNCTION_INGEST_BASE_URL:-}" ]; then
+  INGEST_BASE="${NEON_FUNCTION_INGEST_BASE_URL%/}"
+else
+  INGEST_BASE="https://${NEON_BRANCH_ID}-ingest${NEON_FUNCTION_HOST_SUFFIX}"
+fi
+jq -n --arg url "$INGEST_BASE/ingest" --arg secret "$FACTORY_INGEST_SECRET" \
+  '{ingestUrl: $url, secret: $secret, factory: {teamKey: "FAC", label: "factory"}}' \
   > ~/.config/marshal-factory/config.json
 chmod 600 ~/.config/marshal-factory/config.json
 ```
 
-`secret` must equal `FACTORY_INGEST_SECRET`, or ingest rejects the reporter's events. [Settings](#settings) lists the optional limits you can add under `factory`.
+`linearApiKey` is optional. Add it only when this factory uses Linear: `jq --arg key "$LINEAR_API_KEY" '. + {linearApiKey: $key}'` applied to the file above. `secret` must equal `FACTORY_INGEST_SECRET`, or ingest rejects the reporter's events. [Settings](#settings) lists the optional limits you can add under `factory`.
 
 ### 6. Create the GitHub App
 
@@ -141,7 +158,9 @@ neon functions deploy ingest --branch main --src functions/ingest/index.ts \
   --env GITHUB_APP_WEBHOOK_SECRET="$(jq -r .webhook_secret ~/.config/marshal-factory/github-app.json)"
 ```
 
-### 7. Create the Linear webhook
+### 7. Create the Linear webhook (optional)
+
+Skip this when Linear is not configured. `bun scripts/install-webhooks.ts` exits without changing anything if `linearApiKey` or `LINEAR_WEBHOOK_SECRET` is missing.
 
 ```sh
 bun scripts/install-webhooks.ts
@@ -158,17 +177,18 @@ Import the repo into Vercel as a Next.js project. `vercel.json` already sets the
   - `NEON_AUTH_BASE_URL`, `NEON_AUTH_COOKIE_SECRET`
   - `NEON_REALTIME_URL`, `NEXT_PUBLIC_NEON_REALTIME_URL`, `NEON_REALTIME_SECRET`
   - `FACTORY_OWNER_EMAILS`
-  - `LINEAR_API_KEY`, used by the New job form
+  - `FACTORY_INGEST_SECRET`, the same value as in `.env.local`, so `POST /api/jobs/file` can file a queue job
+  - `LINEAR_API_KEY` (optional), so New job can file in Linear as well as the queue
   - `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY`, from `~/.config/marshal-factory/github-app.json`, so **Add repository** can list the repos the App reaches
   - `FACTORY_TEAM_KEY` and `FACTORY_LABEL`, if they differ from `FAC` and `factory`
   - Optional: `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`, so you can paste a repo's secrets in the panel instead of running a command on the Mac
   - Optional: `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` and `SLACK_OWNER_USER_ID` ([Connecting Slack](#connecting-slack))
 - Set the Ignored Build Step to `[ -z "$DATABASE_URL" ]`, so previews without a database are skipped. To get previews with their own Neon branch, connect Neon's Vercel integration. Each preview then migrates its own branch, and the migration guard stops any preview that points at production.
 
-Deploy, then add the panel's production URL to Neon Auth's trusted domains; the example uses `https://marshal-factory.vercel.app`, so put your own domain in its place. A new branch has none, and without this sign-up fails with "Create account failed: Invalid origin.":
+Deploy, then add the panel's production URL to Neon Auth's trusted domains. This fork's panel is `https://marshal-factory-dougclift.vercel.app`. A new branch has none, and without this sign-up fails with "Create account failed: Invalid origin.":
 
 ```sh
-neon neon-auth domain add https://marshal-factory.vercel.app --branch main
+neon neon-auth domain add https://marshal-factory-dougclift.vercel.app --branch main
 ```
 
 Then create your owner account. Sign-up is off by default. The [owner account steps](docs/operations.md#panel-access-and-deploys) turn it on briefly, so you can register with an address from `FACTORY_OWNER_EMAILS` and confirm it with the emailed code.
@@ -224,9 +244,10 @@ The Jobs page and the Inbox have a repository filter in the header. It is kept i
 
 **Start a job.** Either:
 
-- In Linear, add the `factory` label to an issue in Todo.
-- In the panel, click **New job**, then write a title, a description, and optionally paste or drop images. The panel files the issue in Linear for you.
-- In Slack, type `/factory <what to build>`, or pick **Send to factory** from a message's ⋯ menu. Both open the same form ([Connecting Slack](#connecting-slack)).
+- In the panel, click **New job**, then write a title, a description, and optionally paste or drop images. **File in** is Queue, or Linear when `LINEAR_API_KEY` is set. With no Linear key, Queue is the only choice.
+- Over HTTP, `POST /api/jobs/file` with the ingest secret. See [File a job over HTTP](#file-a-job-over-http).
+- In Slack, type `/factory <what to build>`, or pick **Send to factory** from a message's ⋯ menu. Both open the same form, including the source choice when both exist ([Connecting Slack](#connecting-slack)).
+- In Linear, when it is configured, add the `factory` label to an issue in Todo.
 
 To run one issue on another harness or place than Settings, add a child of the **Harness** or **Runs on** label group, and to send it to another repo than the default, a child of **Repository**; `bun scripts/sync-linear-labels.ts` creates the groups ([Per-ticket overrides](docs/operations.md#per-ticket-overrides), [Repositories](#repositories)).
 
@@ -238,13 +259,47 @@ Within seconds the issue moves to In Progress, a comment says the factory took i
 
 **What needs you.** The panel's **Inbox** collects everything waiting on you: questions, PRs handed over for review, failures, failed reverts and stops that couldn't be confirmed, each with its actions. With Slack connected, each one also arrives as a message with the same buttons, which is edited once the item is resolved.
 
-**Answer questions.** When the issue is ambiguous or something blocks the run, the card moves to Waiting, and the question is posted as a comment on the Linear issue, usually with options to pick from. Reply on the issue, in the Inbox, or with **Answer** in Slack. The thread continues with your answer.
+**Answer questions.** When the job is ambiguous or something blocks the run, the card moves to Waiting, and the question is posted on the job (a Linear comment, or a comment on the queue row), usually with options to pick from. Reply on the job, in the Inbox, or with **Answer** in Slack. The thread continues with your answer.
 
 **Review and merge.** At the PR stage, the issue moves to In Review with a link to the pull request, and the agent reports whether it is confident in what it built. In a repo set to **Merge when confident**, a confident PR that clears the hard limits is merged by the factory. Otherwise it lands in the Inbox: review it as you would any PR, then merge from the panel (**Merge**, or **Approve and merge** in the Inbox), with **Approve and merge** in Slack, or on GitHub, or send it back with **Request changes**. Every merge the factory makes, including your approvals, is done by the runner. Either way, the issue moves to Done and the worktree or sandbox is cleaned up. If main moves on and the PR conflicts, the factory tells the thread to merge main and fix it.
 
-**Stop a job.** Remove the `factory` label, or cancel the issue. The runner stops the thread.
+**Stop a job.** In Linear, remove the `factory` label or cancel the issue. The runner stops the thread.
 
 **When it fails.** A job fails when the agent gives up, or when it stays stuck after one nudge. The reason is posted on the issue, the issue goes back to Todo, and the label changes to `factory-failed`. To retry, press **Retry** on the job's item in the panel's Needs you inbox or in its Slack message, with an optional note for the next attempt, or add `factory` to the issue again. The retry runs on a new branch (`factory/FAC-7-a2`). A failed job's worktree is kept for three days, so you can look at what it did. Spend is measured per attempt and shown on the card; no amount stops a run.
+
+## File a job over HTTP
+
+`POST /api/jobs/file` files a job in the queue, the same path as New job with Queue selected. It does not use a panel session. Send `Authorization: Bearer $FACTORY_INGEST_SECRET` (the panel's Vercel env needs that secret). A missing or wrong secret is rejected. The comparison is constant-time.
+
+```sh
+curl -sS -X POST "https://marshal-factory-dougclift.vercel.app/api/jobs/file" \
+  -H "authorization: Bearer $FACTORY_INGEST_SECRET" \
+  -H "content-type: application/json" \
+  -d '{"title":"Show the item count","description":"On the weight sort button.","repo":"owner/name","harness":"Claude Code","runsOn":"modal"}'
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `title` | yes | 3 to 200 characters |
+| `description` | no | up to 10,000 characters |
+| `repo` | no | `owner/name` of an enabled target repo. Omitted uses the default repo. |
+| `harness` | no | a reported harness's provider id or its display name |
+| `runsOn` | no | `mac` (this Mac) or `modal` |
+| `requestId` | no | a UUID. Sending the same one again returns the first job. |
+
+`201` body:
+
+```json
+{ "key": "MF-12", "id": "queue:…", "url": "https://marshal-factory-dougclift.vercel.app/?job=MF-12" }
+```
+
+`key` is the job key and the branch name (`factory/MF-12`). `id` is the job id the runner writes when it claims the row. `url` opens the panel. The runner claims the job within a few seconds (a claim intent is recorded; the 90 second timer is the backstop) and then launches it on the Mac or in Modal like any other job. No Linear call is made.
+
+## The queue
+
+The queue is a task source stored in this factory's Postgres (`queue_items`, migration 0040). Filing inserts a Todo row with the `factory` label and a key `MF-<n>`. The runner's claim reads it through the same source adapter as Linear, launches on `factory/MF-<n>`, opens the PR, and writes stage comments back onto the row. Retry, answers, and the panel's status all use that row. `bun run db:migrate` creates the tables; the Vercel build runs it too.
+
+Set `FACTORY_LABEL` on the panel and in the runner's environment when `factory.label` in the config is not `factory`. The two have to match, or the runner will not claim what the panel filed.
 
 ## Settings
 
@@ -280,7 +335,7 @@ Then set **Run jobs on** to Modal in the panel's Settings, which shows anything 
 
 Optional. With Slack connected, the runner messages you when a job needs you or the factory merges or reverts on its own, and edits the message once it's resolved. The messages carry the Inbox's buttons (**Approve and merge**, **Request changes**, **Answer**, **Close**, **Dismiss**), and `/factory` or the **Send to factory** message shortcut files new jobs. Only your own Slack account can act.
 
-1. Create the app at [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From a manifest**, with the manifest in [docs/operations.md](docs/operations.md#slack-notifications), then install it to your workspace. Change the panel URL in it if yours isn't `marshal-factory.vercel.app`.
+1. Create the app at [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From a manifest**, with the manifest in [docs/operations.md](docs/operations.md#slack-notifications), then install it to your workspace. The manifest's panel URL is `marshal-factory-dougclift.vercel.app`.
 2. Add three values to `.env.local` in the live checkout: `SLACK_BOT_TOKEN` (**OAuth & Permissions** → Bot User OAuth Token), `SLACK_SIGNING_SECRET` (**Basic Information** → App Credentials) and `SLACK_OWNER_USER_ID` (your Slack profile → ⋯ → **Copy member ID**).
 3. Add the same three to the panel's Vercel environment for Production, redeploy, and restart the runner (`bun scripts/install-runner.ts --uninstall && bun scripts/install-runner.ts`).
 4. In the panel's **Settings** → **Notifications**, pick your DMs or a channel, the events you want and optional quiet hours, then **Send test message**.
@@ -300,7 +355,7 @@ It waits for Vercel's production deploy (which runs the migrations), stops the r
 ## Troubleshooting
 
 - **Start with the runner log**: `~/Library/Logs/marshal-factory/runner.log`. Each line is one JSON event. Errors name the step that failed.
-- **An issue isn't picked up.** Check that it is in your team (`teamKey`), has the label, and is in an unstarted state such as Todo. Also check that **Repositories** lists at least one repo or `factory.repos` isn't empty, and that the Linear webhook exists under Linear → Settings → API. The runner also polls every 90 seconds, so a missed webhook only delays the job.
+- **An issue isn't picked up.** For a Linear issue, check that it is in your team (`teamKey`), has the label, and is in an unstarted state such as Todo, and that the Linear webhook exists under Linear → Settings → API. For a queue job, check that its row is still Todo and still has the factory label (`factory`, unless `FACTORY_LABEL` or `factory.label` says otherwise). Either way, **Repositories** needs at least one repo or `factory.repos` must not be empty. The runner also polls every 90 seconds, so a missed wake-up only delays the job.
 - **Machine shows offline.** The runner isn't sending heartbeats. Check `launchctl list | grep marshal-factory`, then the log. Run `bun runner/index.ts --once` in the live checkout to do one pass by hand and see its output.
 - **Sign-up fails with "Invalid origin."** Neon Auth only accepts sign-ups from its trusted domains, and the panel's domain isn't one of them. Run `neon neon-auth domain add https://<your panel domain> --branch main`, then sign up again. See [the owner account steps](docs/operations.md#panel-access-and-deploys).
 - **The board has no live updates.** Check the three Realtime variables in Vercel. Previews never subscribe to live updates; only production does.

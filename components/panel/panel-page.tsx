@@ -22,6 +22,7 @@ import {
 import { REPO_FILTER_COOKIE, repoFilter } from "@/lib/repo-filter";
 import { parseSessionId, runFeedPath } from "@/lib/run-links";
 import { readRegistry } from "@/lib/repositories";
+import { filingSources } from "@/lib/sources";
 
 async function loadDetail(sessionId: string): Promise<DetailProps> {
   const { jobKey, jobId } = await runJob(sessionId);
@@ -68,6 +69,7 @@ async function Panel({ view, searchParams }: { view: PanelView; searchParams: Pr
       machines={machines}
       detail={detail}
       inboxKey={typeof job === "string" ? parseJobKey(job) : undefined}
+      sources={filingSources()}
     />
   );
 }

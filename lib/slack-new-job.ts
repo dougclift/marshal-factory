@@ -5,6 +5,7 @@ import { createJob } from "@/lib/new-job";
 import { newJobSchema, type NewJob } from "@/lib/new-job-schema";
 import { displayName } from "@/lib/repo-name";
 import { defaultRepo, type Registry } from "@/lib/repositories";
+import { filingSources, type FilingChoice } from "@/lib/sources";
 import { SLACK_COMMAND, SLACK_SHORTCUT_CALLBACK_ID, type SlackMessage } from "@/lib/slack";
 import type { InteractionDeps } from "@/lib/slack-interactions";
 import { ephemeral, invalidSignature, NO_TOKEN, NOT_OWNER, parseJson, safeMessage, signedBody, uuidFrom } from "@/lib/slack-request";
@@ -18,7 +19,7 @@ import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 export const NEW_JOB_CALLBACK_ID = "factory:new_job";
 
 /** The modal's inputs; each element's action id is VALUE. */
-export const NEW_JOB_BLOCKS = { title: "title", description: "description", repo: "repo", harness: "harness", runsOn: "runs_on" } as const;
+export const NEW_JOB_BLOCKS = { title: "title", description: "description", source: "source", repo: "repo", harness: "harness", runsOn: "runs_on" } as const;
 const VALUE = "value";
 /** The select option that adds no override label, as the panel's "Settings default". */
 export const SETTINGS_DEFAULT = "settings-default";
@@ -76,12 +77,12 @@ export function shortcutPrefill(text: string, permalink: string | null): Prefill
 const metaSchema = z.object({ responseUrl: z.string().optional(), channel: z.string().optional(), threadTs: z.string().optional() });
 type Meta = z.infer<typeof metaSchema>;
 
-export type ModalOptions = { registry: Registry; harnesses: readonly Harness[] };
+export type ModalOptions = { registry: Registry; harnesses: readonly Harness[]; sources: readonly FilingChoice[] };
 
 /** The repositories and harnesses the panel's form offers. */
 async function modalOptions(deps: InteractionDeps): Promise<ModalOptions> {
   const [registry, harnesses] = await Promise.all([deps.inbox.newJob.registry(), deps.inbox.newJob.harnesses()]);
-  return { registry, harnesses: (harnesses ?? []).filter((h) => h.enabled) };
+  return { registry, harnesses: (harnesses ?? []).filter((h) => h.enabled), sources: filingSources() };
 }
 
 const plain = (text: string) => ({ type: "plain_text", text });
@@ -113,6 +114,7 @@ export function renderNewJobModal(prefill: Prefill, options: ModalOptions, meta:
   const settingsDefault = option(SETTINGS_DEFAULT, "Settings default");
   const repos = options.registry.filter((r) => r.enabled).map((r) => option(r.repo, displayName(r)));
   const initialRepo = repos.find((o) => o.value === defaultRepo(options.registry)?.repo);
+  const defaultSource = options.sources.find((source) => source.isDefault) ?? options.sources[0];
   const select = (block: string, label: string, choices: ReturnType<typeof option>[], initial: ReturnType<typeof option> | undefined, hint?: string) => ({
     type: "input",
     block_id: block,
@@ -130,7 +132,15 @@ export function renderNewJobModal(prefill: Prefill, options: ModalOptions, meta:
     blocks: [
       {
         type: "section",
-        text: { type: "mrkdwn", text: "Files an issue with the factory label. Questions and answers then happen on that issue." },
+        text: {
+      type: "mrkdwn",
+      text:
+        options.sources.length > 1
+          ? "Files a job in the source you pick. Questions and answers then happen on that job."
+          : options.sources[0]?.source === "linear"
+            ? "Files an issue with the factory label. Questions and answers then happen on that issue."
+            : "Files a job in the factory queue. Questions and answers are posted on that job.",
+    },
       },
       {
         type: "input",
@@ -146,6 +156,9 @@ export function renderNewJobModal(prefill: Prefill, options: ModalOptions, meta:
         hint: plain("The agent reads this as the spec. Markdown works."),
         element: { type: "plain_text_input", action_id: VALUE, multiline: true, max_length: SLACK_INPUT_MAX, ...(prefill.description && { initial_value: prefill.description }) },
       },
+      ...(options.sources.length > 1 && defaultSource
+        ? [select(NEW_JOB_BLOCKS.source, "File in", options.sources.map((source) => option(source.source, source.label)), option(defaultSource.source, defaultSource.label), "Linear files an issue. Queue stores the job in the factory database.")]
+        : []),
       ...(repos.length > 0 ? [select(NEW_JOB_BLOCKS.repo, "Repository", repos, initialRepo, "Goes on the issue as its Repository label, the default one included.")] : []),
       select(NEW_JOB_BLOCKS.harness, "Harness", [settingsDefault, ...options.harnesses.map((h) => option(h.id, h.name))], settingsDefault),
       select(NEW_JOB_BLOCKS.runsOn, "Runs on", [settingsDefault, ...EXECUTIONS.map((e) => option(e, RUNS_ON_LABELS[e]))], settingsDefault),
@@ -248,6 +261,7 @@ export function newJobInput(viewId: string, values: z.infer<typeof stateSchema>)
     repo: pick(NEW_JOB_BLOCKS.repo),
     provider: pick(NEW_JOB_BLOCKS.harness),
     execution: pick(NEW_JOB_BLOCKS.runsOn),
+    source: input(NEW_JOB_BLOCKS.source)?.selected_option?.value,
   };
 }
 
@@ -259,6 +273,7 @@ const BLOCK_OF: Record<keyof NewJob, string> = {
   repo: NEW_JOB_BLOCKS.repo,
   provider: NEW_JOB_BLOCKS.harness,
   execution: NEW_JOB_BLOCKS.runsOn,
+  source: NEW_JOB_BLOCKS.source,
 };
 
 /** The New job modal's submission: an invalid form is refused inline, a valid one closes and is filed after the ack. */

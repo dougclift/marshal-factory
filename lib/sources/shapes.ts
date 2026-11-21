@@ -4,20 +4,28 @@ export type SourceShape = { label: string; writeback: z.ZodType; sourceState: z.
 
 const labelGroupSchema = z.object({ name: z.string(), group: z.string() });
 
+const ticketState = {
+  state: z.string().nullable(),
+  labels: z.array(z.string()),
+  /** Labels that sit in a group, with the group's name. A row stored before groups were read has none. */
+  labelGroups: z.array(labelGroupSchema).default([]),
+  /** Every comment the factory posted; anything else is a human. */
+  factoryCommentIds: z.array(z.string()).default([]),
+};
+
 const linear = {
   label: "Linear",
   writeback: z.object({ kind: z.literal("linear"), issueId: z.string().min(1) }),
-  sourceState: z.object({
-    state: z.string().nullable(),
-    labels: z.array(z.string()),
-    /** The labels that sit in a Linear label group, with the group's name; rows stored before groups were read have none. */
-    labelGroups: z.array(labelGroupSchema).default([]),
-    /** Every comment the factory posted on the issue; anything else on it is a human. */
-    factoryCommentIds: z.array(z.string()).default([]),
-  }),
+  sourceState: z.object(ticketState),
 };
 
-const SHIPPED = { linear } satisfies Record<string, SourceShape>;
+const queue = {
+  label: "Queue",
+  writeback: z.object({ kind: z.literal("queue"), itemId: z.string().min(1) }),
+  sourceState: z.object(ticketState),
+};
+
+const SHIPPED = { linear, queue } satisfies Record<string, SourceShape>;
 
 /** The sources the factory ships. Regressions register a fake one beside them (registerSource in ./index). */
 export type JobSource = keyof typeof SHIPPED;

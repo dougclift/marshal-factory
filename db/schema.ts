@@ -261,6 +261,64 @@ export const jobScreenshots = pgTable(
   (t) => [primaryKey({ columns: [t.stage_event_id, t.file] }), index("job_screenshots_job_idx").on(t.job_key)],
 );
 
+/** A label stored on a queue job: a plain name, or a child of a Harness, Runs on or Repository group. */
+export type QueueLabel = { name: string; group: string | null };
+
+/**
+ * Jobs filed straight into the factory, the queue source's tickets. The runner claims rows in
+ * Todo that still carry the factory label, the same intake a labeled Linear issue is. Migration 0040.
+ */
+export const queueItems = pgTable(
+  "queue_items",
+  {
+    id: text("id").primaryKey(),
+    /** The number in the job key, MF-<n>, allocated under the filing lock. */
+    n: integer("n").notNull(),
+    key: text("key").notNull(),
+    /** The call that filed it, so a retry returns this row instead of creating another. */
+    request_id: text("request_id").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    /** Todo, In Progress, In Review, Done or Canceled. */
+    state: text("state").notNull(),
+    labels: jsonb("labels").$type<QueueLabel[]>().notNull(),
+    url: text("url").notNull(),
+    created_at: ts("created_at").notNull(),
+    updated_at: ts("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("queue_items_n_idx").on(t.n),
+    uniqueIndex("queue_items_key_idx").on(t.key),
+    uniqueIndex("queue_items_request_idx").on(t.request_id),
+    index("queue_items_state_idx").on(t.state),
+    check("queue_items_state_check", sql`${t.state} in ('Todo', 'In Progress', 'In Review', 'Done', 'Canceled')`),
+  ],
+);
+
+/** Comments on a queue job. The factory's own are recorded on the job row so a resume can tell them from an answer. */
+export const queueComments = pgTable(
+  "queue_comments",
+  {
+    id: text("id").primaryKey(),
+    item_id: text("item_id")
+      .notNull()
+      .references(() => queueItems.id, { onDelete: "cascade" }),
+    body: text("body").notNull(),
+    by_factory: boolean("by_factory").notNull(),
+    created_at: ts("created_at").notNull(),
+  },
+  (t) => [index("queue_comments_item_idx").on(t.item_id, t.created_at)],
+);
+
+/** An image pasted into a queue job. The markdown in the description points here; the runner copies the bytes onto the machine. */
+export const queueImages = pgTable("queue_images", {
+  id: text("id").primaryKey(),
+  filename: text("filename").notNull(),
+  content_type: text("content_type").notNull(),
+  bytes: bytea("bytes").notNull(),
+  created_at: ts("created_at").notNull(),
+});
+
 /** Every webhook delivery, keyed by its id, so a redelivery is recognised and changes nothing. */
 export const webhookDeliveries = pgTable("webhook_deliveries", {
   delivery_id: text("delivery_id").primaryKey(),

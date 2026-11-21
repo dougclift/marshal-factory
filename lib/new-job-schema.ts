@@ -13,13 +13,15 @@ export const newJobSchema = z.object({
   provider: z.string().trim().min(1).optional(),
   /** Unset files the issue without a Runs on label. */
   execution: executionSchema.optional(),
-  /** The repo's full name; unset means the default repo. Either way the issue gets its Repository label. */
+  /** The repo's full name; unset means the default repo. Either way the job gets its Repository label. */
   repo: z.string().trim().min(1).optional(),
+  /** A filing source the panel offers. Unset uses the default: Linear when it is configured, otherwise the queue. */
+  source: z.string().trim().min(1).optional(),
 });
 export type NewJob = z.infer<typeof newJobSchema>;
 
 export type NewJobOutcome =
-  | { ok: true; identifier: string; url: string }
+  | { ok: true; identifier: string; url: string; id?: string }
   | { ok: false; status: 400 | 403 | 502; message: string };
 
 /** Images a job can carry. Vercel takes at most 4.5 MB per request, so one upload stays under it. */

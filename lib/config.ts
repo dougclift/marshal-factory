@@ -112,13 +112,17 @@ export const factorySchema = z
   .prefault({});
 export type FactoryLimits = z.infer<typeof factorySchema>;
 
-const configSchema = z.object({
-  linearApiKey: z.string().min(1),
+export const configSchema = z.object({
+  /** Omitted when this factory does not use Linear. The runner then never calls Linear. */
+  linearApiKey: z.string().min(1).optional(),
   ingestUrl: z.url(),
   secret: z.string().min(1),
   factory: factorySchema,
 });
 export type FactoryConfig = z.infer<typeof configSchema>;
+
+/** Whether this config can talk to Linear. An empty string is not a key. */
+export const linearConfigured = (config: Pick<FactoryConfig, "linearApiKey">) => Boolean(config.linearApiKey);
 
 /** Just the limits, for readers that hold no secrets, such as the sandbox image build. */
 export function loadLimits(): FactoryLimits {

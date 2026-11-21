@@ -169,8 +169,9 @@ export type LinearDeps = {
   limits: FactoryLimits;
 };
 
-async function runtimeDeps(): Promise<LinearDeps> {
+async function runtimeDeps(): Promise<LinearDeps | undefined> {
   const config = loadConfig();
+  if (!config.linearApiKey) return undefined;
   const { db } = await import("../../db/client");
   return { client: linearClient(config.linearApiKey), db, limits: config.factory };
 }
@@ -240,9 +241,19 @@ async function recordState({ db }: LinearDeps, job: Job, state: string, extra: {
 
 const ANNOUNCED = "In Progress";
 
-export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>): SourceAdapter<"linear"> {
-  let loaded: LinearDeps | undefined;
-  const deps = async () => (loaded ??= await load());
+export function createLinearAdapter(load: () => LinearDeps | undefined | Promise<LinearDeps | undefined>): SourceAdapter<"linear"> {
+  let loaded: LinearDeps | null | undefined;
+  const deps = async () => {
+    if (loaded !== undefined) return loaded;
+    const next = await load();
+    loaded = next ?? null;
+    return loaded;
+  };
+  const requireDeps = async () => {
+    const found = await deps();
+    if (!found) throw new Error("Linear is not configured");
+    return found;
+  };
   let team: Team | undefined;
   const teamOf = async ({ client, limits }: LinearDeps) => (team ??= await client.team(limits.teamKey));
 
@@ -264,7 +275,9 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
     webhook,
 
     async ready() {
-      const { client, limits } = await deps();
+      const found = await deps();
+      if (!found) return [];
+      const { client, limits } = found;
       const nodes = await client.readyIssues(limits.teamKey, limits.label);
       return nodes.map((n) => ({
         externalId: n.id,
@@ -283,7 +296,7 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
 
     async announceClaim(job) {
       if (job.source_state.state === ANNOUNCED) return;
-      const d = await deps();
+      const d = await requireDeps();
       await d.client.update(job.writeback.issueId, {
         stateId: stateId(await teamOf(d), d.limits.teamKey, ANNOUNCED),
         ...(job.attempt > 1 ? await labelChangesAgainstIssue(d, job.writeback.issueId, { remove: [FAILED_LABEL] }) : {}),
@@ -301,7 +314,7 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
 
     async writeBack(job, transition) {
       try {
-        const d = await deps();
+        const d = await requireDeps();
         const action = writeBackTable(d.limits.label)[transition.stage];
         if (!action) return false;
         if (action.state || action.labels) {
@@ -323,12 +336,12 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
     },
 
     async replies(job) {
-      const { client } = await deps();
+      const { client } = await requireDeps();
       return planResume(job, await client.issueWithComments(job.external_id));
     },
 
     async stopWanted(open) {
-      const { client, limits } = await deps();
+      const { client, limits } = await requireDeps();
       const nodes = await client.issuesByIds(open.map((j) => j.external_id));
       const wanted = [];
       for (const job of open) {
@@ -340,7 +353,7 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
 
     async confirmStop(externalId, detail) {
       if (detail === DELETED) return { stop: true, reopen: false };
-      const { client, limits } = await deps();
+      const { client, limits } = await requireDeps();
       const { state } = await client.issueWithComments(externalId);
       const stillLabeled = (await client.labelsOf(externalId)).some((l) => l.name.toLowerCase() === limits.label.toLowerCase());
       if (stillLabeled && !["canceled", "completed"].includes(state.type)) return { stop: false };
@@ -348,21 +361,21 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
     },
 
     async note(job, key, body) {
-      await postComment(await deps(), job, commentId(job.writeback.issueId, "note", key), body);
+      await postComment(await requireDeps(), job, commentId(job.writeback.issueId, "note", key), body);
     },
 
     async labels(job) {
-      const { client } = await deps();
+      const { client } = await requireDeps();
       return (await client.labelsOf(job.writeback.issueId)).map((l) => l.name);
     },
 
     async reopen(job) {
-      const d = await deps();
+      const d = await requireDeps();
       await d.client.setState(job.writeback.issueId, stateId(await teamOf(d), d.limits.teamKey, "Todo"));
     },
 
     async requeue(job) {
-      const d = await deps();
+      const d = await requireDeps();
       await d.client.update(job.writeback.issueId, {
         stateId: stateId(await teamOf(d), d.limits.teamKey, "Todo"),
         ...(await labelChangesAgainstIssue(d, job.writeback.issueId, { add: [d.limits.label] })),
@@ -370,11 +383,12 @@ export function createLinearAdapter(load: () => LinearDeps | Promise<LinearDeps>
     },
 
     async acknowledgeReplies(job, replyIds) {
-      await postComment(await deps(), job, resumeCommentId(job.writeback.issueId, replyIds), "Answer received, resuming.");
+      await postComment(await requireDeps(), job, resumeCommentId(job.writeback.issueId, replyIds), "Answer received, resuming.");
     },
 
     async syncLabelGroups(groups) {
       const d = await deps();
+      if (!d) return { team: process.env.FACTORY_TEAM_KEY ?? "FAC", created: [], problems: [] };
       const { created, problems } = await syncLabelGroups(d.client, (await teamOf(d)).id, groups);
       return { team: d.limits.teamKey, created, problems };
     },
@@ -586,8 +600,11 @@ const uploadFetch: typeof fetch = (input, init) => {
   return fetch(input, init);
 };
 
-const localizeImages = (job: { key: string }, text: string) =>
-  localizeLinearImages(text, { apiKey: loadConfig().linearApiKey, dir: join(/* turbopackIgnore: true */ ATTACHMENTS_DIR, job.key), fetch: uploadFetch });
+const localizeImages = (job: { key: string }, text: string) => {
+  const apiKey = loadConfig().linearApiKey;
+  if (!apiKey) return Promise.resolve(text);
+  return localizeLinearImages(text, { apiKey, dir: join(/* turbopackIgnore: true */ ATTACHMENTS_DIR, job.key), fetch: uploadFetch });
+};
 
 const uploadFromEnv = (image: ImageFile) => {
   const key = process.env.LINEAR_API_KEY;

@@ -30,7 +30,9 @@ import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 import { cn } from "@/lib/utils";
 import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOutcome, type NewJob, type NewJobOutcome } from "@/lib/new-job-schema";
 
-const blank = (): NewJob => ({ title: "", description: "", requestId: crypto.randomUUID() });
+const blank = (source?: string): NewJob => ({ title: "", description: "", requestId: crypto.randomUUID(), ...(source ? { source } : {}) });
+
+type FilingSource = { source: string; label: string; isDefault: boolean };
 
 type JobImage = { id: string; name: string; preview: string } & (
   | { status: "uploading" }
@@ -40,11 +42,12 @@ type JobImage = { id: string; name: string; preview: string } & (
 
 const imagesIn = (files: Iterable<File>) => [...files].filter((f) => f.type.startsWith("image/"));
 
-async function uploadImage(file: File): Promise<ImageUploadOutcome> {
+async function uploadImage(file: File, source: string | undefined): Promise<ImageUploadOutcome> {
   if (!(JOB_IMAGE_TYPES as readonly string[]).includes(file.type)) return { ok: false, status: 400, message: "Only PNG, JPEG, WebP and GIF images." };
   if (file.size > MAX_JOB_IMAGE_BYTES) return { ok: false, status: 413, message: "Larger than 4 MB." };
   const body = new FormData();
   body.set("image", file);
+  if (source) body.set("source", source);
   const res = await fetch("/api/jobs/images", { method: "POST", body }).catch(() => null);
   if (!res) return { ok: false, status: 502, message: "The upload did not reach the panel." };
   return (await res.json().catch(() => ({ ok: false, status: 502, message: `The panel answered ${res.status}.` }))) as ImageUploadOutcome;
@@ -57,13 +60,15 @@ const runsOnItems = [
   ...EXECUTIONS.map((e) => ({ value: e, label: RUNS_ON_LABELS[e] })),
 ];
 
-/** Starts a job by filing it in Linear, where the factory picks it up like any labeled issue. */
-export function NewJobButton({ harnesses, repos }: { harnesses: readonly Harness[]; repos: readonly Pick<RepoSettingsRow, "repo" | "display_name" | "enabled" | "is_default">[] }) {
+/** Starts a job by filing it in the source the form picks. The queue is always there; Linear is too when it is configured. */
+export function NewJobButton({ harnesses, repos, sources }: { harnesses: readonly Harness[]; repos: readonly Pick<RepoSettingsRow, "repo" | "display_name" | "enabled" | "is_default">[]; sources: readonly FilingSource[] }) {
+  const defaultSource = sources.find((source) => source.isDefault)?.source ?? sources[0]?.source;
   const [open, setOpen] = useState(false);
   const [created, setCreated] = useState<Extract<NewJobOutcome, { ok: true }> | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-  const form = useForm<NewJob>({ resolver: zodResolver(newJobSchema), defaultValues: blank() });
+  const form = useForm<NewJob>({ resolver: zodResolver(newJobSchema), defaultValues: blank(defaultSource) });
+  const [source, setSource] = useState<string | undefined>(defaultSource);
   const [images, setImages] = useState<JobImage[]>([]);
   const [dragging, setDragging] = useState(false);
   const repoItems = repos.filter((r) => r.enabled).map((r) => ({ value: r.repo, label: displayName(r) }));
@@ -73,7 +78,8 @@ export function NewJobButton({ harnesses, repos }: { harnesses: readonly Harness
   const uploading = images.some((i) => i.status === "uploading");
 
   const reset = () => {
-    form.reset(blank());
+    form.reset(blank(defaultSource));
+    setSource(defaultSource);
     setCreated(null);
     setFailure(null);
     setImages((current) => {
@@ -82,15 +88,15 @@ export function NewJobButton({ harnesses, repos }: { harnesses: readonly Harness
     });
   };
 
-  // Each image goes to Linear as it is added; its markdown joins the description, as Linear's editor would write it.
+  // Each image is stored for the source selected now; its markdown joins the description.
   const addImages = (files: File[]) => {
     const draft = form.getValues("requestId");
     for (const file of files) {
       const id = crypto.randomUUID();
       setImages((current) => [...current, { id, name: file.name, preview: URL.createObjectURL(file), status: "uploading" }]);
-      void uploadImage(file).then((outcome) => {
-        // The dialog was closed or reopened while this uploaded; the image belongs to a draft that is gone.
-        if (form.getValues("requestId") !== draft) return;
+      void uploadImage(file, source).then((outcome) => {
+        // The dialog was closed or the source changed while this uploaded; the image belongs to a draft that is gone.
+        if (form.getValues("requestId") !== draft || form.getValues("source") !== source) return;
         if (outcome.ok) {
           const description = form.getValues("description").trimEnd();
           form.setValue("description", description ? `${description}\n\n${outcome.markdown}` : outcome.markdown, { shouldValidate: true });
@@ -157,7 +163,7 @@ export function NewJobButton({ harnesses, repos }: { harnesses: readonly Harness
             </DialogHeader>
             <DialogFooter>
               <Button variant="outline" render={<a href={created.url} target="_blank" rel="noreferrer" />}>
-                Open in Linear
+                {source === "linear" ? "Open in Linear" : "Open the board"}
                 <ExternalLinkIcon data-icon="inline-end" />
               </Button>
               <Button onClick={reset}>Start another</Button>
@@ -168,12 +174,56 @@ export function NewJobButton({ harnesses, repos }: { harnesses: readonly Harness
             <DialogHeader>
               <DialogTitle>New job</DialogTitle>
               <DialogDescription>
-                Files a Linear issue with the factory label. Questions and answers then happen on that issue. A harness or
-                place other than the Settings default goes on the issue as its Harness or Runs on label.
+                {source === "linear"
+                  ? "Files a Linear issue with the factory label. Questions and answers then happen on that issue. A harness or place other than the Settings default goes on the issue as its Harness or Runs on label."
+                  : "Files a job in the factory queue. The runner picks it up like any other job. A harness or place other than the Settings default is stored on the job."}
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={submit} className="contents">
               <DialogPanel className="flex flex-col gap-5">
+                {sources.length > 1 && (
+                  <Controller
+                    name="source"
+                    control={form.control}
+                    render={({ field }) => (
+                      <Field>
+                        <FieldLabel htmlFor="new-job-source">File in</FieldLabel>
+                        <Select
+                          items={sources.map((source) => ({ value: source.source, label: source.label }))}
+                          value={field.value ?? defaultSource}
+                          onValueChange={(value) => {
+                            if (value && value !== field.value && images.length > 0) {
+                              const description = images.reduce(
+                                (text, image) => (image.status === "done" ? text.replace(image.markdown, "") : text),
+                                form.getValues("description"),
+                              );
+                              form.setValue("description", description.replace(/\n{3,}/g, "\n\n").trim(), { shouldValidate: true });
+                              setImages((current) => {
+                                for (const image of current) URL.revokeObjectURL(image.preview);
+                                return [];
+                              });
+                            }
+                            const next = value ?? undefined;
+                            setSource(next);
+                            field.onChange(next);
+                          }}
+                        >
+                          <SelectTrigger id="new-job-source" className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            {sources.map((source) => (
+                              <SelectItem key={source.source} value={source.source}>
+                                {source.label}
+                              </SelectItem>
+                            ))}
+                          </SelectPopup>
+                        </Select>
+                        <FieldDescription>Linear files an issue. Queue stores the job in the factory database.</FieldDescription>
+                      </Field>
+                    )}
+                  />
+                )}
                 <Controller
                   name="title"
                   control={form.control}

@@ -1,15 +1,29 @@
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { CONFIG_PATH, loadConfig } from "../lib/config";
+import { ingestBaseUrl } from "../lib/ingest-url";
 
 process.loadEnvFile(".env.local");
-const base = process.env.NEON_FUNCTION_INGEST_BASE_URL!.replace(/\/$/, "");
+const base = ingestBaseUrl();
 const config = loadConfig();
 
-async function linear<T>(query: string, variables: object, schema: z.ZodType<T>) {
+function linearCredentials(): { apiKey: string; secret: string } {
+  const apiKey = config.linearApiKey;
+  const secret = process.env.LINEAR_WEBHOOK_SECRET;
+  if (!apiKey || !secret) {
+    const reason = !apiKey ? "no linearApiKey in the config" : "LINEAR_WEBHOOK_SECRET is not set";
+    console.log(JSON.stringify({ linear: "skipped", reason }));
+    process.exit(0);
+  }
+  return { apiKey, secret };
+}
+
+const { apiKey: linearApiKey, secret: linearSecret } = linearCredentials();
+
+async function linear<T>(apiKey: string, query: string, variables: object, schema: z.ZodType<T>) {
   const res = await fetch("https://api.linear.app/graphql", {
     method: "POST",
-    headers: { authorization: config.linearApiKey, "content-type": "application/json" },
+    headers: { authorization: apiKey, "content-type": "application/json" },
     body: JSON.stringify({ query, variables }),
   });
   const json = (await res.json()) as { data?: unknown; errors?: unknown };
@@ -20,6 +34,7 @@ async function linear<T>(query: string, variables: object, schema: z.ZodType<T>)
 async function linearWebhook() {
   const url = `${base}/webhooks/linear`;
   const { webhooks } = await linear(
+    linearApiKey,
     `{ webhooks(first: 100) { nodes { id url } } }`,
     {},
     z.object({ webhooks: z.object({ nodes: z.array(z.object({ id: z.string(), url: z.string() })) }) }),
@@ -27,18 +42,20 @@ async function linearWebhook() {
   const existing = webhooks.nodes.find((w) => w.url === url);
   if (existing) return existing.id;
   const { teams } = await linear(
+    linearApiKey,
     `query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id } } }`,
     { key: config.factory.teamKey },
     z.object({ teams: z.object({ nodes: z.array(z.object({ id: z.string() })) }) }),
   );
   const created = await linear(
+    linearApiKey,
     `mutation($input: WebhookCreateInput!) { webhookCreate(input: $input) { webhook { id } } }`,
     {
       input: {
         url,
         teamId: teams.nodes[0]!.id,
         resourceTypes: ["Issue", "Comment"],
-        secret: process.env.LINEAR_WEBHOOK_SECRET,
+        secret: linearSecret,
         label: "marshal-factory intake",
       },
     },

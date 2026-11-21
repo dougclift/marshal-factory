@@ -158,6 +158,7 @@ export function LivePanel({
   machines,
   detail,
   inboxKey,
+  sources,
 }: {
   view: PanelView;
   /** The jobs page's layout, from ?view or the remembered one. */
@@ -169,6 +170,8 @@ export function LivePanel({
   registry: readonly PanelRepo[];
   /** The inbox item open on the right, by job key. */
   inboxKey: string | undefined;
+  /** Where New job can file. Queue is always listed; Linear only when the panel has a key. */
+  sources: readonly { source: string; label: string; isDefault: boolean }[];
   jobs: Feed<JobRow>;
   runs: Feed<RunRow>;
   agents: Feed<AgentRow>;
@@ -283,7 +286,7 @@ export function LivePanel({
                   {inboxCount} {inboxCount === 1 ? "needs" : "need"} you
                 </Button>
               )}
-              <NewJobButton harnesses={enabledHarnesses} repos={registry} />
+              <NewJobButton harnesses={enabledHarnesses} repos={registry} sources={sources} />
             </>
           ) : view === "inbox" ? (
             repoSelect
