@@ -1,0 +1,2 @@
+Filesystem     1024-blocks    Used Available Capacity Mounted on
+/dev/vdc         265591976 7356380 258219212       3% /

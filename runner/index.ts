@@ -3,7 +3,7 @@ import { join } from "node:path";
 // The factory runner: the only process that touches T3, git and the GitHub API. It reacts to webhook intents
 // through Neon Realtime, runs a plain timer for the checks that need no event, and on startup
 // reconciles everything it missed while it was down. Every step is idempotent.
-//   bun runner/index.ts            run as a daemon (launchd starts it this way)
+//   bun runner/index.ts            run as a daemon (launchd on macOS, systemd on Linux)
 //   bun runner/index.ts --once     run the startup reconcile once and exit
 
 process.chdir(join(import.meta.dirname, ".."));
