@@ -4,7 +4,8 @@ import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOut
 import { defaultFilingSource, filingSources } from "@/lib/sources";
 import type { FileDraft, FiledJob, ImageFile } from "@/lib/sources/types";
 import { defaultRepo, repoLabel, REPOSITORY_GROUP, type Registry } from "@/lib/repositories";
-import { HARNESS_GROUP, RUNS_ON_GROUP, RUNS_ON_LABELS } from "@/lib/ticket-overrides";
+import { matchMachine, type NamedMachine } from "@/lib/placement";
+import { HARNESS_GROUP, RUNS_ON_GROUP, RUNS_ON_LABELS, runsOnMachineLabel } from "@/lib/ticket-overrides";
 
 // A job started from the panel is filed in the source the form picked. Linear files a Todo issue
 // with the factory label; the queue stores the same job in Postgres. Either way the runner claims
@@ -16,12 +17,14 @@ export type NewJobDeps = {
   /** What the machines report; null when none has reported its harnesses yet. */
   harnesses: () => Promise<Harness[] | null>;
   registry: () => Promise<Registry>;
+  /** The runners a job can be pinned to. Omitted, a pin is refused. */
+  machines?: () => Promise<readonly NamedMachine[]>;
 };
 
 export async function fileNewJob(deps: Omit<NewJobDeps, "user">, input: unknown): Promise<NewJobOutcome> {
   const parsed = newJobSchema.safeParse(input);
   if (!parsed.success) return { ok: false, status: 400, message: parsed.error.issues[0]?.message ?? "The job is not valid." };
-  const { provider, execution, repo, source: requested, ...draft } = parsed.data;
+  const { provider, execution, targetMachine, repo, source: requested, ...draft } = parsed.data;
   const source = requested ?? defaultFilingSource();
   if (!filingSources().some((choice) => choice.source === source)) {
     return { ok: false, status: 400, message: source === "linear" ? "Linear is not configured." : `${source} is not a source the panel can file to.` };
@@ -36,9 +39,15 @@ export async function fileNewJob(deps: Omit<NewJobDeps, "user">, input: unknown)
     if (!harness) return { ok: false, status: 400, message: `No machine reports an enabled harness ${provider}.` };
     labels.push({ group: HARNESS_GROUP, name: harness.name });
   }
-  if (execution) labels.push({ group: RUNS_ON_GROUP, name: RUNS_ON_LABELS[execution] });
+  let pinned: string | undefined;
+  if (targetMachine) {
+    const found = matchMachine(await deps.machines?.() ?? [], targetMachine);
+    if ("error" in found) return { ok: false, status: 400, message: found.error };
+    pinned = found.machine.id;
+    labels.push({ group: RUNS_ON_GROUP, name: runsOnMachineLabel(found.machine) });
+  } else if (execution) labels.push({ group: RUNS_ON_GROUP, name: RUNS_ON_LABELS[execution] });
   try {
-    const filed = await deps.file({ ...draft, source, ...(labels.length > 0 && { labels }) });
+    const filed = await deps.file({ ...draft, source, ...(pinned && { targetMachine: pinned }), ...(labels.length > 0 && { labels }) });
     return { ok: true, identifier: filed.key, url: filed.url, ...(filed.id ? { id: filed.id } : {}) };
   } catch (error) {
     return { ok: false, status: 502, message: `Could not file the job: ${error instanceof Error ? error.message : String(error)}` };

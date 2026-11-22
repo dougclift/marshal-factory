@@ -94,6 +94,7 @@ function draftOf(item: Item) {
     title: item.title,
     url: item.url,
     description: item.description,
+    targetMachine: item.target_machine,
     writeback: { kind: "queue" as const, itemId: item.id },
     sourceState: {
       state: item.state,
@@ -377,6 +378,7 @@ export function createQueueAdapter(): SourceAdapter<"queue"> {
             description,
             state: TODO,
             labels: labelsFrom(draft, factoryLabel()),
+            target_machine: draft.targetMachine ?? null,
             url,
             created_at: now,
             updated_at: now,

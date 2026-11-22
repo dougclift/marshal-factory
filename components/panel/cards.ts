@@ -2,6 +2,7 @@ import type { JobRow, MachineRow, RunRow } from "@/db/schema";
 import { splitArchived } from "@/lib/archive";
 import type { Stage } from "@/lib/events";
 import { sandboxState, type SandboxState } from "@/lib/execution";
+import { isOnline } from "@/lib/machine";
 import { evidenceLine, parseSummary, type EvidenceLine } from "@/lib/evidence";
 import { attemptBranch, isMcpSession } from "@/lib/factory";
 import { harnessLabel, isTracked, type Harness, type Tracking } from "@/lib/harness";
@@ -40,6 +41,8 @@ export type BoardCard = {
   harness: CardHarness | null;
   /** Where the current attempt runs; null before a launch. */
   runsOn: RunsOn | null;
+  /** The machine the job is pinned to; null when any runner that can run it may claim it. */
+  targetMachineId: string | null;
   /** The runner's merge decision while the job is in pr, or once the factory merged it. */
   mergeDecision: MergeDecision | null;
   /** What was verified at which commit, apart from the stage the agent reported; null when there is nothing to say. */
@@ -65,6 +68,13 @@ export function runsOn(job: Pick<JobRow, "execution" | "machine_id" | "sandbox_i
   const sandbox = sandboxState(job);
   if (job.execution === "modal" || sandbox) return { kind: "modal", sandbox };
   return job.machine_id ? { kind: "local", machineId: job.machine_id } : null;
+}
+
+/** The pinned machine as the job view says it: its name, and that the job is waiting when the heartbeat is stale. `now` of 0 means the clock is not ready yet. */
+export function targetNote(machine: { name: string; last_seen_at: Date } | undefined, targetId: string, now: number) {
+  const name = machine?.name ?? targetId;
+  const stale = now > 0 && (!machine || !isOnline(machine.last_seen_at, now));
+  return { name, text: stale ? `Waiting on ${name}` : `Pinned to ${name}`, stale };
 }
 
 export function whereLine(where: RunsOn, machineName: string | null) {
@@ -157,6 +167,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
       runs: jobRuns,
       harness: job.provider ? harnessOf(job.provider, attemptRuns) : null,
       runsOn: runsOn(job),
+      targetMachineId: job.target_machine,
       mergeDecision: shownDecision(job),
       evidence: jobEvidenceLine(job),
       stop: cardStop(job),
@@ -193,6 +204,7 @@ export function boardCards(jobs: readonly JobRow[], runs: readonly RunRow[], har
         runs: sorted,
         harness: null,
         runsOn: null,
+        targetMachineId: null,
         mergeDecision: null,
         evidence: null,
         stop: null,

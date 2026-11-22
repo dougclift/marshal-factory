@@ -16,14 +16,14 @@ import { isFinished } from "@/lib/archive";
 import { STAGES, type Stage } from "@/lib/events";
 import { stopLine } from "@/lib/stop";
 import { cn } from "@/lib/utils";
-import { harnessLine, showsDecision, whereLine, type BoardCard } from "./cards";
+import { harnessLine, showsDecision, targetNote, whereLine, type BoardCard } from "./cards";
 import { EvidenceLine } from "./evidence";
 import { formatUsd, spendOf } from "./format";
 import { jobsHref } from "./job-view";
 import { decisionLine } from "./merge-decision";
 import { useRowKeys } from "./row-keys";
 import { STAGE_META } from "./stages";
-import { ShortTime } from "./time";
+import { ShortTime, useAfterHydration } from "./time";
 
 const spring = { type: "spring", stiffness: 500, damping: 40 } as const;
 
@@ -36,6 +36,7 @@ function Row({
   card,
   href,
   machineName,
+  target,
   agentsBySession,
   open,
   onFocus,
@@ -44,6 +45,8 @@ function Row({
   card: BoardCard;
   href: string | null;
   machineName: string | null;
+  /** The machine the job is pinned to, when one is set. */
+  target: { text: string; stale: boolean } | null;
   repoLabels: ReadonlyMap<string, string> | undefined;
   agentsBySession: Map<string, AgentRow[]>;
   open: boolean;
@@ -72,7 +75,9 @@ function Row({
       {repoLabels && <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @2xl:block">{card.repo && repoLabels.get(card.repo)}</span>}
       <span className={cn("hidden w-32 shrink-0 truncate text-xs @sm:block @xl:w-56", decision?.tone)}>{decision?.text}</span>
       <span className="hidden w-44 shrink-0 @3xl:block">{card.evidence && <EvidenceLine line={card.evidence} />}</span>
-      <span className="hidden w-44 shrink-0 truncate text-xs text-muted-foreground @4xl:block">{where}</span>
+      <span className={cn("hidden w-44 shrink-0 truncate text-xs @4xl:block", target?.stale ? "text-warning" : "text-muted-foreground")}>
+        {target?.stale ? target.text : (where ?? target?.text)}
+      </span>
       <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground @5xl:block">{card.harness && harnessLine(card.harness)}</span>
       <span className="hidden w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums @3xl:block">{formatUsd(cost)}</span>
       <span className="hidden w-12 shrink-0 text-right text-xs text-muted-foreground tabular-nums @md:block">
@@ -118,6 +123,7 @@ export function JobList({
   /** The archive: its rows are restored instead of archived. */
   archived?: boolean;
 }) {
+  const now = useAfterHydration(() => Date.now(), 0);
   const listRef = useRef<HTMLDivElement>(null);
   const [closed, setClosed] = useState<readonly Stage[]>([]);
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
@@ -239,6 +245,7 @@ export function JobList({
                             card={card}
                             href={openHref(card, archived)}
                             machineName={card.machineId && (machines.get(card.machineId)?.name ?? card.machineId)}
+                            target={card.targetMachineId ? targetNote(machines.get(card.targetMachineId), card.targetMachineId, now) : null}
                             agentsBySession={agentsBySession}
                             open={isOpen(card)}
                             onFocus={() => setCursor(card.id)}

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { EXECUTIONS } from "./execution";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "./harness";
 import { pricingSchema } from "./pricing";
 import { inTestMode } from "./test-mode";
@@ -86,6 +87,11 @@ export const factorySchema = z
     tickSeconds: z.number().positive().default(90),
     /** Overrides this machine's id (macOS IOPlatformUUID, Linux /etc/machine-id) in the machines table, so a second runner keeps its own row. */
     machineId: z.string().min(1).optional(),
+    /**
+     * Which places this runner claims jobs for. A job whose place is not listed is left for another runner.
+     * A Modal-only machine, with no T3, sets ["modal"] so it never claims a job that would run locally.
+     */
+    executions: z.array(z.enum(EXECUTIONS)).min(1).default([...EXECUTIONS]),
     /** T3's state database, read-only, for the machine inventory. */
     t3StatePath: z.string().optional(),
     /** How often the runner re-collects the slow machine inventory (T3, Connect, projects, repos). */

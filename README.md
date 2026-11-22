@@ -289,7 +289,8 @@ curl -sS -X POST "https://marshal-factory-dougclift.vercel.app/api/jobs/file" \
 | `description` | no | up to 10,000 characters |
 | `repo` | no | `owner/name` of an enabled target repo. Omitted uses the default repo. |
 | `harness` | no | a reported harness's provider id or its display name |
-| `runsOn` | no | `mac` (this Mac) or `modal` |
+| `runsOn` | no | `mac` (local, on any runner that runs local) or `modal` |
+| `machine` | no | a machine's id or display name. Pins the job to that machine and runs it locally. Unknown names are rejected. |
 | `requestId` | no | a UUID. Sending the same one again returns the first job. |
 
 `201` body:
@@ -370,6 +371,14 @@ mv /tmp/marshal-factory-config.json ~/.config/marshal-factory/config.json
 chmod 600 ~/.config/marshal-factory/config.json
 ```
 
+Set `factory.executions` to `["modal"]` as well. The default is `["local", "modal"]`, so this machine would also claim jobs that run locally: one pinned to a machine, and one that Settings or a Runs on label send to local. `["modal"]` leaves those for a runner that can run local. An untargeted Modal job can still be claimed here.
+
+```sh
+jq '.factory.executions = ["modal"]' ~/.config/marshal-factory/config.json > /tmp/marshal-factory-config.json
+mv /tmp/marshal-factory-config.json ~/.config/marshal-factory/config.json
+chmod 600 ~/.config/marshal-factory/config.json
+```
+
 Then, on this machine:
 
 ```sh
@@ -381,7 +390,7 @@ bun scripts/sandbox-image.ts
 
 In the panel, keep **Run jobs on** set to Modal. Every runner reads that one settings row. Leave `factory.repos` empty unless T3 is running on this VPS. Repos the factory already knows stay available for Modal jobs; `factory.repos` lists only this machine's local checkouts.
 
-`planLaunch` in `runner/overrides.ts` is why the list matters. The saved place defaults to this machine's T3. When Settings send a job to local and this machine has no checkout of the repo, the job moves to Modal if Modal can launch. A ticket labeled Local still moves to Modal when T3 is down and Modal can launch. A job with no Runs on label does not, once a checkout is listed: a down T3 leaves that job local, and the launch fails. A plain clone in `factory.repos` is still what a post-merge revert uses. `runner/post-merge.ts` reverts from a worktree of that checkout, and the clone does not take launches off Modal while **Run jobs on** is Modal. List a clone when you want reverts from this machine, and do that only while local launch is not the selected place. With T3 not running here, an empty `factory.repos` and **Run jobs on** left on Modal is the Modal-only setup.
+`planLaunch` in `runner/overrides.ts` is why the list matters, for a runner whose `factory.executions` includes `local`. The saved place defaults to this machine's T3. When Settings send a job to local and this machine has no checkout of the repo, the job moves to Modal if Modal can launch. A ticket labeled Local still moves to Modal when T3 is down and Modal can launch. With `factory.executions` set to `["modal"]`, those jobs are not claimed here at all: they stay for a runner that runs locally. A job with no Runs on label does not move, once a checkout is listed: a down T3 leaves that job local, and the launch fails. A plain clone in `factory.repos` is still what a post-merge revert uses. `runner/post-merge.ts` reverts from a worktree of that checkout, and the clone does not take launches off Modal while **Run jobs on** is Modal. List a clone when you want reverts from this machine, and do that only while local launch is not the selected place. With T3 not running here, an empty `factory.repos` and **Run jobs on** left on Modal is the Modal-only setup.
 
 Hooks in a target repo point at the checkout that wired them. `lib/target-wiring.ts` writes those paths absolutely into the repo's hooks and MCP server. A Modal sandbox points the paths at the copy of the factory in the image. A local job runs the hooks at the written path, which on a VPS is still the original machine's checkout. That matters only for local jobs.
 
@@ -405,7 +414,7 @@ That also installs `marshal-factory-t3.service`, which runs `t3 serve --host 127
 
 `bun scripts/rollout.ts` in this checkout stops and starts the systemd user service the same way it does the LaunchAgent on a Mac, and reads `~/.local/state/marshal-factory/runner.log`.
 
-Before you shut the old machine down, wait until it has no claimed job left. A job stays with the machine that claimed it (`jobs.machine_id`): its thread, its sandbox and a revert of its merge stay there. The VPS claims queued jobs that no machine holds yet. Stop the old runner once its in-flight jobs have finished. `bun scripts/rollout.ts` on that machine refuses while any are in flight, and `--wait` waits for them. With the old runner still up, both machines claim new jobs.
+Before you shut the old machine down, wait until it has no claimed job left. A job stays with the machine that claimed it (`jobs.machine_id`): its thread, its sandbox and a revert of its merge stay there. The VPS claims queued jobs that no machine holds yet. Stop the old runner once its in-flight jobs have finished. `bun scripts/rollout.ts` on that machine refuses while any are in flight, and `--wait` waits for them. With the old runner still up, both machines claim new jobs that are not pinned to one machine and that each runner's `factory.executions` allows.
 
 ## Connecting Slack
 

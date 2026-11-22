@@ -28,8 +28,17 @@ const GONE = { ok: false, status: 404, message: "This job is no longer in Incomi
 function parse(input: unknown): IncomingOutcome | IncomingDraft {
   const parsed = newJobSchema.safeParse(input);
   if (!parsed.success) return { ok: false, status: 400, message: parsed.error.issues[0]?.message ?? "The job is not valid." };
-  const { requestId, title, description, provider, execution, repo, source } = parsed.data;
-  return { id: requestId, title, description, provider: provider ?? null, execution: execution ?? null, repo: repo ?? null, source: source ?? null };
+  const { requestId, title, description, provider, execution, targetMachine, repo, source } = parsed.data;
+  return {
+    id: requestId,
+    title,
+    description,
+    provider: provider ?? null,
+    execution: execution ?? null,
+    target_machine: targetMachine ?? null,
+    repo: repo ?? null,
+    source: source ?? null,
+  };
 }
 
 /** Parks a new job in Incoming. */
@@ -60,6 +69,7 @@ export async function queueIncoming(deps: IncomingDeps, id: string): Promise<New
     description: draft.description,
     ...(draft.provider ? { provider: draft.provider } : {}),
     ...(draft.execution ? { execution: draft.execution } : {}),
+    ...(draft.target_machine ? { targetMachine: draft.target_machine } : {}),
     ...(draft.repo ? { repo: draft.repo } : {}),
     ...(draft.source ? { source: draft.source } : {}),
   });

@@ -243,7 +243,8 @@ export function LivePanel({
   const defaultRepo = registry.find((r) => r.is_default)?.repo ?? null;
   const shownIncoming = useMemo(() => (repo ? incomingRows.filter((j) => (j.repo ?? defaultRepo) === repo) : incomingRows), [incomingRows, repo, defaultRepo]);
   const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
-  const newJob = <NewJobButton harnesses={enabledHarnesses} repos={registry} sources={sources} />;
+  const machineChoices = useMemo(() => machineRows.map((machine) => ({ id: machine.id, name: machine.name })), [machineRows]);
+  const newJob = <NewJobButton harnesses={enabledHarnesses} repos={registry} sources={sources} machines={machineChoices} />;
 
   const meta = viewMeta(view);
   const active = runRows.filter((r) => r.status === "active").length;
@@ -261,7 +262,7 @@ export function LivePanel({
             selected={detail?.sessionId}
             machines={machineById}
             repoLabels={repoLabels}
-            incoming={<IncomingColumn jobs={shownIncoming} repoLabels={repoLabels} harnesses={enabledHarnesses} repos={registry} sources={sources} />}
+            incoming={<IncomingColumn jobs={shownIncoming} repoLabels={repoLabels} harnesses={enabledHarnesses} repos={registry} sources={sources} machines={machineChoices} />}
           />
         ) : (
           <JobList cards={shownCards} agentsBySession={agentsBySession} selected={detail?.sessionId} machines={machineById} repoLabels={repoLabels} />
@@ -341,6 +342,7 @@ export function LivePanel({
                 fullView={fullView}
                 job={selectedJob}
                 machine={selectedJob?.machine_id ? machineById.get(selectedJob.machine_id) : undefined}
+                target={selectedJob?.target_machine ? { id: selectedJob.target_machine, machine: machineById.get(selectedJob.target_machine) } : undefined}
                 harnesses={harnesses}
                 jobSpend={
                   selectedJob

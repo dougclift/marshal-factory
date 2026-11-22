@@ -12,4 +12,5 @@ export const newJobDeps: NewJobDeps = {
   file: (draft) => fileInto(draft.source ?? defaultFilingSource(), draft),
   harnesses: async () => reportedHarnesses(await db.select().from(machines), Date.now()),
   registry: () => readRegistry(db),
+  machines: async () => db.select({ id: machines.id, name: machines.name }).from(machines),
 };

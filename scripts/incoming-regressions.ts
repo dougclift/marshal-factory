@@ -35,7 +35,7 @@ function harness(user: { email: string; emailVerified: boolean } | null = owner)
   const { deps, rows, filed } = harness();
   assert.deepEqual(await addIncoming(deps, input), { ok: true, id: requestId }, "the owner parks a job in Incoming");
   assert.equal(filed.length, 0, "and nothing is filed, so the runner has nothing to claim");
-  assert.deepEqual(rows.get(requestId), { id: requestId, title: input.title, description: input.description, provider: null, execution: null, repo: null, source: "queue" }, "the draft keeps the form's fields");
+  assert.deepEqual(rows.get(requestId), { id: requestId, title: input.title, description: input.description, provider: null, execution: null, target_machine: null, repo: null, source: "queue" }, "the draft keeps the form's fields");
 
   await addIncoming(deps, input);
   assert.equal(rows.size, 1, "a double submit keeps one draft");
@@ -48,7 +48,7 @@ function harness(user: { email: string; emailVerified: boolean } | null = owner)
   await addIncoming(deps, input);
   const edited = { ...input, title: "Add an Incoming column", description: `${input.description}\n\nMore detail.`, provider: "claudeAgent", execution: "modal" };
   assert.deepEqual(await editIncoming(deps, edited), { ok: true, id: requestId }, "the owner edits the draft");
-  assert.deepEqual(rows.get(requestId), { id: requestId, title: edited.title, description: edited.description, provider: "claudeAgent", execution: "modal", repo: null, source: "queue" }, "title, description, harness and runs on change");
+  assert.deepEqual(rows.get(requestId), { id: requestId, title: edited.title, description: edited.description, provider: "claudeAgent", execution: "modal", target_machine: null, repo: null, source: "queue" }, "title, description, harness and runs on change");
 
   const queued = await queueIncoming(deps, requestId);
   assert.deepEqual(queued, { ok: true, identifier: "MF-9", url: "https://panel/?job=MF-9" }, "sending it to Queued files it");

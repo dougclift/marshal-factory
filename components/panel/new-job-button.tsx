@@ -26,6 +26,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { EXECUTIONS, executionSchema } from "@/lib/execution";
 import type { IncomingJobRow, RepoSettingsRow } from "@/db/schema";
+import type { NamedMachine } from "@/lib/placement";
 import type { Harness } from "@/lib/harness";
 import { displayName } from "@/lib/repo-name";
 import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
@@ -41,6 +42,7 @@ const fromIncoming = (job: IncomingJobRow): NewJob => ({
   requestId: job.id,
   ...(job.provider ? { provider: job.provider } : {}),
   ...(job.execution ? { execution: job.execution } : {}),
+  ...(job.target_machine ? { targetMachine: job.target_machine } : {}),
   ...(job.repo ? { repo: job.repo } : {}),
   ...(job.source ? { source: job.source } : {}),
 });
@@ -51,6 +53,8 @@ export type JobFormProps = {
   harnesses: readonly Harness[];
   repos: readonly Pick<RepoSettingsRow, "repo" | "display_name" | "enabled" | "is_default">[];
   sources: readonly FilingSource[];
+  /** Runners a job can be pinned to, shown by display name. */
+  machines: readonly NamedMachine[];
 };
 
 /** Where a new job lands: parked in Incoming for the owner to edit, or filed for the runner to claim. */
@@ -81,10 +85,10 @@ async function uploadImage(file: File, source: string | undefined): Promise<Imag
 
 const SETTINGS_DEFAULT = "settings-default";
 
-const runsOnItems = [
-  { value: SETTINGS_DEFAULT, label: "Settings default" },
-  ...EXECUTIONS.map((e) => ({ value: e, label: RUNS_ON_LABELS[e] })),
-];
+const MACHINE_VALUE = "machine:";
+
+const runsOnChoice = (execution: NewJob["execution"], targetMachine: string | undefined) =>
+  targetMachine ? `${MACHINE_VALUE}${targetMachine}` : (execution ?? SETTINGS_DEFAULT);
 
 /** Starts a job: parks it in Incoming, or files it in the source the form picks. The queue is always there; Linear is too when it is configured. */
 export function NewJobButton(props: JobFormProps) {
@@ -96,7 +100,7 @@ export function IncomingJobDialog({ job, onClose, ...props }: JobFormProps & { j
   return <JobDialog {...props} incoming={{ job, onClose }} />;
 }
 
-function JobDialog({ harnesses, repos, sources, incoming }: JobFormProps & { incoming?: { job: IncomingJobRow; onClose: () => void } }) {
+function JobDialog({ harnesses, repos, sources, machines, incoming }: JobFormProps & { incoming?: { job: IncomingJobRow; onClose: () => void } }) {
   const router = useRouter();
   const defaultSource = incoming ? (incoming.job.source ?? undefined) : (sources.find((source) => source.isDefault)?.source ?? sources[0]?.source);
   const initial = () => (incoming ? fromIncoming(incoming.job) : blank(defaultSource));
@@ -112,11 +116,39 @@ function JobDialog({ harnesses, repos, sources, incoming }: JobFormProps & { inc
   const repoItems = repos.filter((r) => r.enabled).map((r) => ({ value: r.repo, label: displayName(r) }));
   const defaultRepo = repos.find((r) => r.is_default)?.repo ?? null;
   const harnessItems = [{ value: SETTINGS_DEFAULT, label: "Settings default" }, ...harnesses.map((h) => ({ value: h.id, label: h.name }))];
+  const [runsOn, setRunsOnValue] = useState(() => runsOnChoice(form.getValues("execution"), form.getValues("targetMachine")));
+  const chosenTarget = runsOn.startsWith(MACHINE_VALUE) ? runsOn.slice(MACHINE_VALUE.length) : undefined;
+  const runsOnItems = [
+    { value: SETTINGS_DEFAULT, label: "Settings default" },
+    ...EXECUTIONS.map((e) => ({ value: e, label: RUNS_ON_LABELS[e] })),
+    ...machines.map((machine) => ({ value: `${MACHINE_VALUE}${machine.id}`, label: machine.name })),
+    ...(chosenTarget && !machines.some((machine) => machine.id === chosenTarget)
+      ? [{ value: `${MACHINE_VALUE}${chosenTarget}`, label: chosenTarget }]
+      : []),
+  ];
+  const setRunsOn = (value: string | null) => {
+    const next = value ?? SETTINGS_DEFAULT;
+    setRunsOnValue(next);
+    if (next === SETTINGS_DEFAULT) {
+      form.setValue("execution", undefined);
+      form.setValue("targetMachine", undefined);
+      return;
+    }
+    if (next.startsWith(MACHINE_VALUE)) {
+      form.setValue("execution", undefined);
+      form.setValue("targetMachine", next.slice(MACHINE_VALUE.length));
+      return;
+    }
+    form.setValue("execution", executionSchema.parse(next));
+    form.setValue("targetMachine", undefined);
+  };
   const picker = useRef<HTMLInputElement>(null);
   const uploading = images.some((i) => i.status === "uploading");
 
   const reset = () => {
-    form.reset(initial());
+    const next = initial();
+    form.reset(next);
+    setRunsOnValue(runsOnChoice(next.execution, next.targetMachine));
     setSource(defaultSource);
     setLands("incoming");
     setCreated(null);
@@ -179,13 +211,20 @@ function JobDialog({ harnesses, repos, sources, incoming }: JobFormProps & { inc
     router.refresh();
     then();
   };
+  // The select is the source of truth, so a switch from Modal to a machine never files both.
+  const placed = (values: NewJob): NewJob => {
+    if (runsOn.startsWith(MACHINE_VALUE)) return { ...values, execution: undefined, targetMachine: runsOn.slice(MACHINE_VALUE.length) };
+    if (runsOn === "local" || runsOn === "modal") return { ...values, execution: runsOn, targetMachine: undefined };
+    return { ...values, execution: undefined, targetMachine: undefined };
+  };
   const submit = form.handleSubmit((values) => {
     setFailure(null);
+    const job = placed(values);
     startTransition(async () => {
-      if (incoming) settle(await editIncomingJob(values), close);
-      else if (lands === "incoming") settle(await addIncomingJob(values), close);
+      if (incoming) settle(await editIncomingJob(job), close);
+      else if (lands === "incoming") settle(await addIncomingJob(job), close);
       else {
-        const outcome = await createJob(values);
+        const outcome = await createJob(job);
         if (outcome.ok) setCreated(outcome);
         else setFailure(outcome.message);
       }
@@ -195,8 +234,9 @@ function JobDialog({ harnesses, repos, sources, incoming }: JobFormProps & { inc
   const sendToQueued = form.handleSubmit((values) => {
     if (!incoming) return;
     setFailure(null);
+    const job = placed(values);
     startTransition(async () => {
-      const saved = await editIncomingJob(values);
+      const saved = await editIncomingJob(job);
       if (!saved.ok) return setFailure(saved.message);
       const outcome = await queueIncomingJob(incoming.job.id);
       settle(outcome, () => outcome.ok && setCreated(outcome));
@@ -407,31 +447,22 @@ function JobDialog({ harnesses, repos, sources, incoming }: JobFormProps & { inc
                       </Field>
                     )}
                   />
-                  <Controller
-                    name="execution"
-                    control={form.control}
-                    render={({ field }) => (
-                      <Field>
-                        <FieldLabel htmlFor="new-job-runs-on">Runs on</FieldLabel>
-                        <Select
-                          items={runsOnItems}
-                          value={field.value ?? SETTINGS_DEFAULT}
-                          onValueChange={(v) => field.onChange(v === null || v === SETTINGS_DEFAULT ? undefined : executionSchema.parse(v))}
-                        >
-                          <SelectTrigger id="new-job-runs-on" className="w-full">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectPopup>
-                            {runsOnItems.map((item) => (
-                              <SelectItem key={item.value} value={item.value}>
-                                {item.label}
-                              </SelectItem>
-                            ))}
-                          </SelectPopup>
-                        </Select>
-                      </Field>
-                    )}
-                  />
+                  <Field>
+                    <FieldLabel htmlFor="new-job-runs-on">Runs on</FieldLabel>
+                    <Select items={runsOnItems} value={runsOn} onValueChange={setRunsOn}>
+                      <SelectTrigger id="new-job-runs-on" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectPopup>
+                        {runsOnItems.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                    {form.formState.errors.targetMachine && <FieldError>{form.formState.errors.targetMachine.message}</FieldError>}
+                  </Field>
                 </div>
                 <div className="flex flex-wrap items-start gap-2">
                   {images.map((image) => (

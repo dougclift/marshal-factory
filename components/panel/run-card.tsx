@@ -123,6 +123,7 @@ export function StageCard({
   machineName,
   repoLabel,
   t3Href,
+  target,
 }: {
   card: BoardCard;
   agents: readonly AgentRow[];
@@ -132,6 +133,8 @@ export function StageCard({
   repoLabel?: string;
   /** The job's thread in its machine's T3, for a stop that couldn't be confirmed. */
   t3Href?: string;
+  /** The machine the job is pinned to, when one is set. */
+  target: { text: string; stale: boolean } | null;
 }) {
   const { latest } = card;
   const where = card.runsOn && whereLine(card.runsOn, machineName);
@@ -156,6 +159,7 @@ export function StageCard({
         </p>
       )}
       {card.stage === "waiting" && card.question && <p className="line-clamp-2 text-xs text-warning">{card.question}</p>}
+      {target && <p className={cn("text-xs", target.stale ? "text-warning" : "text-muted-foreground")}>{target.text}</p>}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {latest?.status === "active" && <Spinner className="size-2.5 shrink-0" aria-label="Working" />}
         <span className="shrink-0 font-mono">{card.jobKey ?? card.id.slice(0, 8)}</span>
