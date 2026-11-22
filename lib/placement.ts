@@ -1,7 +1,7 @@
 import type { Execution } from "./execution";
 
-/** A runner, as the machines table names it. */
-export type NamedMachine = { id: string; name: string };
+/** A runner, as the machines table names it. `executions` is what it reported it claims; absent when it has not said. */
+export type NamedMachine = { id: string; name: string; executions?: readonly Execution[] | null };
 
 /**
  * Where a job should run before a runner's own fallbacks. A pin is local on that machine,
@@ -25,6 +25,12 @@ export function machineMayClaim(placement: Placement, machineId: string, executi
   if (placement.targetMachine !== null && placement.targetMachine !== machineId) return false;
   return true;
 }
+
+/**
+ * A pin runs locally, so a machine that has reported it does not launch local jobs cannot take one.
+ * A machine that has not reported its places yet can still be pinned.
+ */
+export const runsLocal = (machine: { executions?: readonly Execution[] | null }) => !machine.executions || machine.executions.includes("local");
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 

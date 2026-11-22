@@ -4,7 +4,7 @@ import { JOB_IMAGE_TYPES, MAX_JOB_IMAGE_BYTES, newJobSchema, type ImageUploadOut
 import { defaultFilingSource, filingSources } from "@/lib/sources";
 import type { FileDraft, FiledJob, ImageFile } from "@/lib/sources/types";
 import { defaultRepo, repoLabel, REPOSITORY_GROUP, type Registry } from "@/lib/repositories";
-import { matchMachine, type NamedMachine } from "@/lib/placement";
+import { matchMachine, runsLocal, type NamedMachine } from "@/lib/placement";
 import { HARNESS_GROUP, RUNS_ON_GROUP, RUNS_ON_LABELS, runsOnMachineLabel } from "@/lib/ticket-overrides";
 
 // A job started from the panel is filed in the source the form picked. Linear files a Todo issue
@@ -43,6 +43,7 @@ export async function fileNewJob(deps: Omit<NewJobDeps, "user">, input: unknown)
   if (targetMachine) {
     const found = matchMachine(await deps.machines?.() ?? [], targetMachine);
     if ("error" in found) return { ok: false, status: 400, message: found.error };
+    if (!runsLocal(found.machine)) return { ok: false, status: 400, message: `${found.machine.name} only runs Modal jobs, so a job can't be pinned to it.` };
     pinned = found.machine.id;
     labels.push({ group: RUNS_ON_GROUP, name: runsOnMachineLabel(found.machine) });
   } else if (execution) labels.push({ group: RUNS_ON_GROUP, name: RUNS_ON_LABELS[execution] });

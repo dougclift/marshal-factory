@@ -538,16 +538,24 @@ async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; d
   return db.transaction(async (tx) => {
     // The lock's name predates other sources; runners on older code take the same one.
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
-    const [{ count }] = await tx
+    const [{ count: held }] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(jobs)
-      .where(
-        or(
-          and(mineSql, or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)),
-          and(isNull(jobs.machine_id), eq(jobs.stage, "queued"), inArray(jobs.repo, targets), or(isNull(jobs.target_machine), eq(jobs.target_machine, me.id))),
-        ),
-      );
-    let inFlight = count;
+      .where(and(mineSql, or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)));
+    // Queued jobs no machine holds yet count only when this runner would launch them. A Modal-only
+    // runner does not fill its slots with local jobs the Mac has not started.
+    const waiting = await tx
+      .select({ source: jobs.source, source_state: jobs.source_state, repo: jobs.repo, target_machine: jobs.target_machine })
+      .from(jobs)
+      .where(and(isNull(jobs.machine_id), eq(jobs.stage, "queued"), inArray(jobs.repo, targets)));
+    let inFlight = held;
+    for (const job of waiting) {
+      const state = SOURCE_SHAPES[job.source].sourceState.safeParse(job.source_state);
+      const asked = state.success ? sourceFor(job.source).overrides(state.data) : { harness: [], runsOn: [], repository: [] };
+      const ticket = ticketOverrides(asked, reported, listed);
+      const fallback = known.find((repo) => repo.repo === job.repo)?.execution ?? settings.execution;
+      if (machineMayClaim(placementOf(ticket, job.target_machine, fallback), me.id, config.factory.executions)) inFlight++;
+    }
     const claimed: string[] = [];
     for (const { source, draft } of ready) {
       if (inFlight >= config.factory.maxInFlight) break;

@@ -12,7 +12,8 @@ import { splitArchived } from "@/lib/archive";
 import { sandboxState } from "@/lib/execution";
 import { attemptBranch } from "@/lib/factory";
 import { inboxItems } from "@/lib/inbox";
-import { reportedHarnesses } from "@/lib/machine";
+import { parseInventory, reportedHarnesses } from "@/lib/machine";
+import { runsLocal } from "@/lib/placement";
 import { cn } from "@/lib/utils";
 import { groupBy, spendOf } from "./format";
 import { Inbox } from "./inbox";
@@ -243,7 +244,10 @@ export function LivePanel({
   const defaultRepo = registry.find((r) => r.is_default)?.repo ?? null;
   const shownIncoming = useMemo(() => (repo ? incomingRows.filter((j) => (j.repo ?? defaultRepo) === repo) : incomingRows), [incomingRows, repo, defaultRepo]);
   const repoSelect = options.length > 0 && <RepoSelect options={options} value={repo} onChange={pickRepo} />;
-  const machineChoices = useMemo(() => machineRows.map((machine) => ({ id: machine.id, name: machine.name })), [machineRows]);
+  const machineChoices = useMemo(
+    () => machineRows.filter((machine) => runsLocal({ executions: parseInventory(machine.inventory)?.executions })).map((machine) => ({ id: machine.id, name: machine.name })),
+    [machineRows],
+  );
   const newJob = <NewJobButton harnesses={enabledHarnesses} repos={registry} sources={sources} machines={machineChoices} />;
 
   const meta = viewMeta(view);

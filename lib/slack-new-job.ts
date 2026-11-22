@@ -9,7 +9,7 @@ import { filingSources, type FilingChoice } from "@/lib/sources";
 import { SLACK_COMMAND, SLACK_SHORTCUT_CALLBACK_ID, type SlackMessage } from "@/lib/slack";
 import type { InteractionDeps } from "@/lib/slack-interactions";
 import { ephemeral, invalidSignature, NO_TOKEN, NOT_OWNER, parseJson, safeMessage, signedBody, uuidFrom } from "@/lib/slack-request";
-import type { NamedMachine } from "@/lib/placement";
+import { runsLocal, type NamedMachine } from "@/lib/placement";
 import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 
 // Filing jobs from Slack: `/factory` (app/api/slack/commands) and the "Send to factory" message
@@ -169,7 +169,7 @@ export function renderNewJobModal(prefill: Prefill, options: ModalOptions, meta:
       select(
         NEW_JOB_BLOCKS.runsOn,
         "Runs on",
-        [settingsDefault, ...EXECUTIONS.map((e) => option(e, RUNS_ON_LABELS[e])), ...options.machines.map((machine) => option(`machine:${machine.id}`, machine.name))],
+        [settingsDefault, ...EXECUTIONS.map((e) => option(e, RUNS_ON_LABELS[e])), ...options.machines.filter(runsLocal).map((machine) => option(`machine:${machine.id}`, machine.name))],
         settingsDefault,
       ),
     ],

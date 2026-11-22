@@ -20,6 +20,7 @@ const slot = (id: string) => ({ id, repos: [REPO], maxInFlight: 4 });
 const local = { execution: "local" as const, ticket: null };
 const modal = { execution: "modal" as const, ticket: null };
 const savedExecutions = [...config.factory.executions];
+const savedCap = config.factory.maxInFlight;
 
 const mac = { id: "mac-1", name: "Doug's Mac" };
 const linux = { id: VPS, name: "Linux box" };
@@ -97,6 +98,13 @@ const errorOf = async (body: unknown) => ((await (await http(body)).json()) as {
 
   assert.equal(await errorOf({ title: "Count the items", machine: "Nowhere" }), "No machine is named Nowhere.", "an unknown machine is a 400");
   assert.match(await errorOf({ title: "Count the items", machine: "Doug's Mac", runsOn: "modal" }), /runs the job locally/);
+  const modalOnlyMachines = async () => [{ id: "vps-1", name: "Linux box", executions: ["modal" as const] }];
+  const pinnedToModal = await handleFileJob(
+    new Request("https://panel.test/api/jobs/file", { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ title: "Count the items", machine: "Linux box" }) }),
+    { secret, file: (async () => ({ key: "MF-1", url: "u", id: "queue:1" })) as never, harnesses: async () => [], registry: async () => [], machines: modalOnlyMachines },
+  );
+  assert.equal(pinnedToModal.status, 400);
+  assert.match(((await pinnedToModal.json()) as { error: string }).error, /only runs Modal jobs/);
   const twins = async () => [...named, { id: "mac-2", name: "Doug's Mac" }];
   const ambiguous = await handleFileJob(
     new Request("https://panel.test/api/jobs/file", { method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify({ title: "Count the items", machine: "Doug's Mac" }) }),
@@ -170,12 +178,31 @@ try {
   config.factory.executions = ["local", "modal"];
   const both = await claim({ sources: [source as never], repos: async () => [REPO], registry: async () => [] });
   assert.deepEqual(both.claimed.sort(), [`${prefix}-7`, `${prefix}-8`, `${prefix}-9`].sort(), "a runner that can do both adopts local, Modal and its own pin, and skips another machine's");
+
+  // Local jobs already queued must not fill a Modal-only runner's slots.
+  config.factory.executions = ["modal"];
+  config.factory.maxInFlight = 2;
+  await db.insert(jobs).values(
+    [1, 2].map((n) =>
+      linearJob(`${prefix}-held-${n}`, `${prefix}-2${n}`, {
+        repo: REPO,
+        source_state: { state: "Todo", labels: ["Local"], labelGroups: [{ name: "Local", group: "Runs on" }], factoryCommentIds: [] },
+      }),
+    ),
+  );
+  const room = await claim({
+    sources: [{ source: "linear" as const, ready: async () => [{ externalId: `${prefix}-12`, key: `${prefix}-12`, title: "modal", url: "u", description: null, writeback: { kind: "linear" as const, issueId: `${prefix}-12` }, sourceState: label("Cloud") }], overrides: source.overrides }] as never,
+    repos: async () => [REPO],
+    registry: async () => [],
+  });
+  assert.deepEqual(room.claimed, [`${prefix}-12`], "queued local jobs do not use up a Modal-only runner's slots");
   const self = (await db.select({ target_machine: jobs.target_machine }).from(jobs).where(eq(jobs.key, `${prefix}-7`)))[0];
   assert.equal(self?.target_machine, TEST_MACHINE_ID, "the claim records the pin");
   const cloudRow = (await db.select({ target_machine: jobs.target_machine }).from(jobs).where(eq(jobs.key, `${prefix}-8`)))[0];
   assert.equal(cloudRow?.target_machine, null, "a Modal job stays unpinned");
 } finally {
   config.factory.executions = savedExecutions;
+  config.factory.maxInFlight = savedCap;
   await db.delete(jobs).where(like(jobs.key, `${prefix}-%`));
   await db.delete(machines).where(eq(machines.id, VPS));
   if (!existed) await db.delete(machines).where(eq(machines.id, TEST_MACHINE_ID));

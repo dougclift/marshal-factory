@@ -231,6 +231,7 @@ try {
       harnesses: async () => inventoryA.harnesses,
       sandbox: async () => (sandboxEntered(), await sandboxGate, inventoryA.sandbox),
       slack: async () => inventoryA.slack,
+      executions: async () => inventoryA.executions,
     },
     inventoryMs: 600_000,
     // Room for the beat's database writes, which a resent packet on a distant link stretches past 200 ms.

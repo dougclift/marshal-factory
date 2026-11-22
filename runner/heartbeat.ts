@@ -164,11 +164,12 @@ export function inventoryCollectors(): InventoryCollectors {
       return { ...sandboxReadiness(factory.sandbox), ...(imageBuild && { imageBuild }) };
     },
     slack: async () => ({ configured: Boolean(process.env.SLACK_BOT_TOKEN?.trim()), owner: Boolean(process.env.SLACK_OWNER_USER_ID?.trim()) }),
+    executions: async () => [...factory.executions],
   };
 }
 
 export async function collectInventory(collectors: InventoryCollectors): Promise<Inventory> {
-  const [runnerSha, t3, connect, projects, repos, harnesses, sandbox, slack] = await Promise.all([
+  const [runnerSha, t3, connect, projects, repos, harnesses, sandbox, slack, executions] = await Promise.all([
     settle(collectors.runnerSha),
     settle(collectors.t3),
     settle(collectors.connect),
@@ -177,8 +178,9 @@ export async function collectInventory(collectors: InventoryCollectors): Promise
     settle(collectors.harnesses),
     settle(collectors.sandbox),
     settle(collectors.slack),
+    settle(collectors.executions),
   ]);
-  return { runnerSha, t3, connect, projects, repos, harnesses, sandbox, slack };
+  return { runnerSha, t3, connect, projects, repos, harnesses, sandbox, slack, ...(Array.isArray(executions) && { executions }) };
 }
 
 export async function writeHeartbeat(machine: Machine, heartbeat: Heartbeat, now: Date) {
