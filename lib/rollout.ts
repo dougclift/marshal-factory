@@ -43,7 +43,7 @@ const failedSteps = (result: unknown) =>
 /**
  * How the runner came up, from the log lines written since it was restarted: clean at its first
  * tick after `start` when neither that tick nor the startup reconcile had a failed step and no
- * step errored in between. A second `start` means it crashed and launchd started it again.
+ * step errored in between. A second `start` means it crashed and the service manager started it again.
  */
 export function startupVerdict(lines: readonly string[]): StartupVerdict {
   let started = false;

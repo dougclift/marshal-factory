@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpus, hostname, loadavg, totalmem } from "node:os";
+import { readFile } from "node:fs/promises";
+import { cpus, homedir, hostname, loadavg, totalmem } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
@@ -18,10 +19,25 @@ const RUNNER_DIR = join(import.meta.dirname, "..");
 const text = async (cmd: string, args: string[], cwd?: string) =>
   (await run(cmd, args, { cwd, timeout: 5_000, maxBuffer: 1024 * 1024 })).stdout;
 
-export type Machine = { id: string; name: string; idFrom: "config" | "ioreg" | "hostname" };
+export type Machine = { id: string; name: string; idFrom: "config" | "ioreg" | "hostname" | "machine-id" };
 
-/** Falls back to the host name when ioreg fails, so the runner starts instead of crash-looping under launchd. */
+/**
+ * macOS uses the hardware UUID, and falls back to the host name when ioreg fails, so the runner
+ * starts instead of crash-looping under launchd. Linux reads /etc/machine-id and shows the host
+ * name; a missing or unusable file falls back the same way. `factory.machineId`, passed as
+ * `override`, wins on both.
+ */
 export async function identify(override?: string): Promise<Machine> {
+  if (process.platform === "linux") {
+    if (override) return { id: override, name: hostname(), idFrom: "config" };
+    let contents: string | undefined;
+    try {
+      contents = await readFile("/etc/machine-id", "utf8");
+    } catch {
+      contents = undefined;
+    }
+    return machineFromMachineId(hostname(), contents);
+  }
   const name = (await text("scutil", ["--get", "ComputerName"]).then((out) => out.trim(), () => "")) || hostname();
   if (override) return { id: override, name, idFrom: "config" };
   const uuid = await text("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"]).then(
@@ -29,6 +45,19 @@ export async function identify(override?: string): Promise<Machine> {
     () => undefined,
   );
   return uuid ? { id: uuid, name, idFrom: "ioreg" } : { id: `hostname:${hostname()}`, name, idFrom: "hostname" };
+}
+
+/** /etc/machine-id is one 32-character hex id. Anything else is treated as missing. */
+export function parseMachineId(contents: string): string | undefined {
+  const id = contents.trim().toLowerCase();
+  return /^[0-9a-f]{32}$/.test(id) ? id : undefined;
+}
+
+/** The Linux machine record: the config id, else /etc/machine-id, else the host name. */
+export function machineFromMachineId(name: string, contents: string | undefined, override?: string): Machine {
+  if (override) return { id: override, name, idFrom: "config" };
+  const id = contents === undefined ? undefined : parseMachineId(contents);
+  return id ? { id, name, idFrom: "machine-id" } : { id: `hostname:${name}`, name, idFrom: "hostname" };
 }
 
 let machine: Promise<Machine> | undefined;
@@ -49,14 +78,42 @@ export function parseVmStat(output: string, totalBytes: number) {
   return { usedBytes, totalBytes };
 }
 
+/** Memory in use on Linux: MemTotal minus MemAvailable, both reported in kB. */
+export function parseMeminfo(output: string) {
+  const kb = (name: string) => {
+    const match = new RegExp(`^${name}:\\s+(\\d+)\\s+kB$`, "m").exec(output);
+    if (!match) throw new Error(`meminfo has no ${name} line`);
+    return Number(match[1]);
+  };
+  const totalKb = kb("MemTotal");
+  const availableKb = kb("MemAvailable");
+  if (!(totalKb > 0)) throw new Error("meminfo has no MemTotal");
+  const usedBytes = (totalKb - availableKb) * 1024;
+  if (usedBytes < 0) throw new Error("meminfo reports more available memory than the machine has");
+  return { usedBytes, totalBytes: totalKb * 1024 };
+}
+
 export function parseDf(output: string) {
-  const [header, row] = output.trim().split("\n");
-  if (!header?.startsWith("Filesystem") || !header.includes("1024-blocks") || !row) throw new Error("df output has no 1024-blocks table");
-  const columns = row.trim().split(/\s+/);
+  const lines = output.trim().split("\n");
+  const header = lines[0];
+  // macOS `df -k` says 1024-blocks. GNU `df -k` says 1K-blocks; `df -kP` says 1024-blocks.
+  if (!header?.startsWith("Filesystem") || !(header.includes("1024-blocks") || header.includes("1K-blocks"))) {
+    throw new Error("df output has no 1024-blocks table");
+  }
+  // GNU df prints a long filesystem name on its own line and the counts on the next. Joining them
+  // keeps the 1024-block total and the available count at the same columns as a macOS row.
+  const row = lines.slice(1).join(" ").trim();
+  if (!row) throw new Error("df output has no 1024-blocks table");
+  const columns = row.split(/\s+/);
   const totalKb = Number(columns[1]);
   const freeKb = Number(columns[3]);
   if (!Number.isFinite(totalKb) || !Number.isFinite(freeKb) || totalKb <= 0) throw new Error("df row has no block counts");
   return { freeBytes: freeKb * 1024, totalBytes: totalKb * 1024 };
+}
+
+/** `df -kP` is the POSIX table. LC_ALL=C keeps the header in English so parseDf can read it. */
+async function linuxDisk() {
+  return (await run("df", ["-kP", homedir()], { timeout: 5_000, maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: "C" } })).stdout;
 }
 
 export type HeartbeatCollectors = { [K in keyof Heartbeat]: () => Promise<Heartbeat[K]> };
@@ -67,8 +124,8 @@ const settle = <T>(collect: () => Promise<T>) => collect().catch((): typeof UNKN
 export function systemCollectors(capacity: () => Promise<Heartbeat["capacity"]>): HeartbeatCollectors {
   return {
     cpu: async () => ({ load1: loadavg()[0]!, cores: cpus().length }),
-    memory: async () => parseVmStat(await text("vm_stat", []), totalmem()),
-    disk: async () => parseDf(await text("df", ["-k", "/System/Volumes/Data"])),
+    memory: async () => (process.platform === "linux" ? parseMeminfo(await readFile("/proc/meminfo", "utf8")) : parseVmStat(await text("vm_stat", []), totalmem())),
+    disk: async () => parseDf(process.platform === "linux" ? await linuxDisk() : await text("df", ["-k", "/System/Volumes/Data"])),
     capacity,
   };
 }

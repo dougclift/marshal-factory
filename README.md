@@ -36,6 +36,8 @@ On the Mac that runs the factory:
 - The `neon` CLI, signed in, and the `vercel` CLI.
 - `jq` and `openssl`, used by a few commands below.
 
+A Linux VPS can run the runner in place of the Mac. [Runner on a Linux VPS](#runner-on-a-linux-vps) is that setup. The install below is the Mac.
+
 ## Install
 
 These steps set up one factory: one Neon project, one panel, and one Mac running the runner. Do them in order. Several steps depend on values an earlier step creates.
@@ -333,6 +335,77 @@ mkdir -p ~/.codex-factory-1 && CODEX_HOME=~/.codex-factory-1 codex login --devic
 For Claude Code jobs, run `claude setup-token`, add the token as `CLAUDE_CODE_OAUTH_TOKEN=...` to `.env.local` in the live checkout and restart the runner. Without it, those jobs run on Codex. A Claude Code job needs no Codex login, so with the token any number of them run side by side, up to `factory.sandbox.maxParallel` (4) and `factory.maxInFlight` (4). Each Codex job holds one Codex login while its sandbox runs: each extra login (`~/.codex-factory-2` and so on) lets one more Codex sandbox run; list them in `factory.sandbox.codexSlots`.
 
 Then set **Run jobs on** to Modal in the panel's Settings, which shows anything still missing. A job waiting for review or an answer hibernates to a snapshot after five minutes and wakes when it is needed, so it does not pay for a running sandbox while it waits. Claude Code and Codex jobs show stages and cost; other harnesses show neither. The runner rebuilds the image itself when a pin or a playbook changes; rebuild it by hand (`bun scripts/sandbox-image.ts`) when you change the hooks or the MCP server. [docs/operations.md](docs/operations.md#running-jobs-in-modal-sandboxes) has the details, including opening a sandboxed job in T3.
+
+## Runner on a Linux VPS
+
+A Linux VPS can run the runner instead of a Mac. The setup this section is for is Modal-only: the VPS claims jobs and starts the Modal sandboxes, and T3 runs inside those sandboxes. The Mac install above is unchanged.
+
+Run it as a normal user, not root. Install git, curl, unzip, jq, openssl, [Bun](https://bun.sh) and Node 22. Install the Modal CLI with `uv tool install modal`. Install the GitHub CLI (`gh`) only when jobs will run on this machine; a Modal sandbox brings its own.
+
+Clone your fork to `~/code/marshal-factory` and keep that checkout on `main`. It is the live checkout, same as on a Mac:
+
+```sh
+git clone https://github.com/<you>/marshal-factory.git ~/code/marshal-factory
+cd ~/code/marshal-factory
+git checkout main
+bun install
+```
+
+Copy these from the machine that already runs the factory, and keep each one mode 600:
+
+- `.env.local` in the checkout
+- `~/.config/marshal-factory/config.json`
+- `~/.config/marshal-factory/github-app.json`
+
+```sh
+mkdir -p ~/.config/marshal-factory
+chmod 600 .env.local ~/.config/marshal-factory/config.json ~/.config/marshal-factory/github-app.json
+```
+
+Give this machine its own `factory.machineId`. With none set, the runner uses `/etc/machine-id` and shows the host name in the panel. Never reuse another machine's id. A copied config, or a disk image that still has the other machine's `/etc/machine-id`, makes two runners write one `machines` row and both act on the jobs that row owns.
+
+```sh
+jq '.factory.machineId = "replace-with-a-new-id"' ~/.config/marshal-factory/config.json > /tmp/marshal-factory-config.json
+mv /tmp/marshal-factory-config.json ~/.config/marshal-factory/config.json
+chmod 600 ~/.config/marshal-factory/config.json
+```
+
+Then, on this machine:
+
+```sh
+modal token new
+bun scripts/sandbox-image.ts
+```
+
+`modal token new` writes `~/.modal.toml`. The service sets `HOME`, so the runner finds the token. For Claude Code jobs, add `CLAUDE_CODE_OAUTH_TOKEN=...` to `.env.local`. The unit carries no secrets; the runner loads `.env.local` from the checkout when it starts. After changing `.env.local`, restart the service (`systemctl --user restart marshal-factory-runner.service`, or `--uninstall` and install again). Running the installer again, with the unit file unchanged, leaves the process running.
+
+In the panel, keep **Run jobs on** set to Modal. Every runner reads that one settings row. Leave `factory.repos` empty unless T3 is running on this VPS. Repos the factory already knows stay available for Modal jobs; `factory.repos` lists only this machine's local checkouts.
+
+`planLaunch` in `runner/overrides.ts` is why the list matters. The saved place defaults to this machine's T3. When Settings send a job to local and this machine has no checkout of the repo, the job moves to Modal if Modal can launch. A ticket labeled Local still moves to Modal when T3 is down and Modal can launch. A job with no Runs on label does not, once a checkout is listed: a down T3 leaves that job local, and the launch fails. A plain clone in `factory.repos` is still what a post-merge revert uses. `runner/post-merge.ts` reverts from a worktree of that checkout, and the clone does not take launches off Modal while **Run jobs on** is Modal. List a clone when you want reverts from this machine, and do that only while local launch is not the selected place. With T3 not running here, an empty `factory.repos` and **Run jobs on** left on Modal is the Modal-only setup.
+
+Hooks in a target repo point at the checkout that wired them. `lib/target-wiring.ts` writes those paths absolutely into the repo's hooks and MCP server. A Modal sandbox points the paths at the copy of the factory in the image. A local job runs the hooks at the written path, which on a VPS is still the original machine's checkout. That matters only for local jobs.
+
+Install and start the runner:
+
+```sh
+bun scripts/install-runner.ts
+sudo loginctl enable-linger "$USER"
+tail -f ~/.local/state/marshal-factory/runner.log
+```
+
+This writes `~/.config/systemd/user/marshal-factory-runner.service`. It runs `bun runner/index.ts` with the checkout as its working directory, restarts 10 seconds after the process exits, and appends stdout and stderr to `~/.local/state/marshal-factory/runner.log`. The unit's environment is `PATH`, `HOME` and, when `t3` is installed, `T3CODE_CLI_PATH`, the same three the Mac's LaunchAgent sets. Running the installer again reloads systemd and enables the service, and restarts the process only when the unit file changed. `--uninstall` stops, disables and removes the runner unit, and leaves `marshal-factory-t3.service` running so a rollout can stop and start the runner without dropping `t3 serve`. `--uninstall --with-t3` removes that unit too. If linger is off, the installer prints `sudo loginctl enable-linger $USER`. Linger keeps the user service running after you log out. Within a minute the log shows a heartbeat, and the VPS appears under **Machines**.
+
+To run jobs on the VPS itself, install T3 and add its service:
+
+```sh
+bun scripts/install-runner.ts --with-t3
+```
+
+That also installs `marshal-factory-t3.service`, which runs `t3 serve --host 127.0.0.1` and logs to `~/.local/state/marshal-factory/t3.log`. Then list the checkouts in `factory.repos`. Leave this off for a Modal-only VPS.
+
+`bun scripts/rollout.ts` in this checkout stops and starts the systemd user service the same way it does the LaunchAgent on a Mac, and reads `~/.local/state/marshal-factory/runner.log`.
+
+Before you shut the old machine down, wait until it has no claimed job left. A job stays with the machine that claimed it (`jobs.machine_id`): its thread, its sandbox and a revert of its merge stay there. The VPS claims queued jobs that no machine holds yet. Stop the old runner once its in-flight jobs have finished. `bun scripts/rollout.ts` on that machine refuses while any are in flight, and `--wait` waits for them. With the old runner still up, both machines claim new jobs.
 
 ## Connecting Slack
 

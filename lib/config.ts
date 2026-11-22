@@ -84,7 +84,7 @@ export const factorySchema = z
     model: z.string().default(DEFAULT_MODEL),
     /** How often the runner's timer runs the watchdog and usage reconcile. */
     tickSeconds: z.number().positive().default(90),
-    /** Overrides this Mac's IOPlatformUUID as its id in the machines table, so test runners keep their own row. */
+    /** Overrides this machine's id (macOS IOPlatformUUID, Linux /etc/machine-id) in the machines table, so a second runner keeps its own row. */
     machineId: z.string().min(1).optional(),
     /** T3's state database, read-only, for the machine inventory. */
     t3StatePath: z.string().optional(),

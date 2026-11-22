@@ -9,7 +9,7 @@ const { db } = await import("../db/client");
 const { jobs, machines } = await import("../db/schema");
 const { isOnline, heartbeatSchema, inventorySchema, parseHeartbeat } = await import("../lib/machine");
 const { parseConnectStatus, readProjects } = await import("../lib/t3-state");
-const { collectHeartbeat, createBeat, identify, inventoryReporter, parseDf, parseOrigin, parseVmStat, writeHeartbeat, writeInventory } = await import("../runner/heartbeat");
+const { collectHeartbeat, createBeat, identify, inventoryReporter, machineFromMachineId, parseDf, parseMachineId, parseMeminfo, parseOrigin, parseVmStat, writeHeartbeat, writeInventory } = await import("../runner/heartbeat");
 const { claimLaunch, releaseLaunch } = await import("../runner/ops");
 const { linearJob } = await import("./fixtures");
 
@@ -33,7 +33,35 @@ assert.deepEqual(
   { freeBytes: 337_503_380 * 1024, totalBytes: 971_298_980 * 1024 },
   "df reports available and total from the 1024-blocks table",
 );
+assert.deepEqual(
+  parseDf(fixture("df-gnu.txt")),
+  { freeBytes: 258_219_212 * 1024, totalBytes: 265_591_976 * 1024 },
+  "GNU df -kP uses the same total and available columns",
+);
+assert.deepEqual(
+  parseDf(fixture("df-gnu-wrapped.txt")),
+  { freeBytes: 51_123_456 * 1024, totalBytes: 102_070_036 * 1024 },
+  "GNU df wraps a long filesystem name and may say 1K-blocks",
+);
 assert.throws(() => parseDf("Filesystem   1024-blocks"), "garbled df throws");
+assert.deepEqual(
+  parseMeminfo(fixture("meminfo.txt")),
+  { usedBytes: (16_384_000 - 8_000_000) * 1024, totalBytes: 16_384_000 * 1024 },
+  "linux memory in use is MemTotal minus MemAvailable",
+);
+assert.throws(() => parseMeminfo("MemTotal: 1 kB\n"), /MemAvailable/);
+assert.throws(() => parseMeminfo("MemTotal: 1 kB\nMemAvailable: 2 kB\n"), /more available/);
+assert.equal(parseMachineId(fixture("machine-id.txt")), "0123456789abcdef0123456789abcdef", "a machine-id is 32 hex characters");
+assert.equal(parseMachineId("ABCDEF0123456789ABCDEF0123456789\n"), "abcdef0123456789abcdef0123456789", "the id is stored lowercase");
+assert.equal(parseMachineId("uninitialized\n"), undefined, "an uninitialized machine-id is missing");
+assert.equal(parseMachineId("\n"), undefined);
+assert.deepEqual(
+  machineFromMachineId("box", fixture("machine-id.txt")),
+  { id: "0123456789abcdef0123456789abcdef", name: "box", idFrom: "machine-id" },
+  "linux identify uses /etc/machine-id and the host name",
+);
+assert.deepEqual(machineFromMachineId("box", "uninitialized\n"), { id: "hostname:box", name: "box", idFrom: "hostname" }, "without a machine-id the host name is the id");
+assert.deepEqual(machineFromMachineId("box", undefined, "lane-9"), { id: "lane-9", name: "box", idFrom: "config" }, "the config id wins on linux too");
 
 assert.equal(parseOrigin("git@github.com:ski043/marshal-factory.git\n"), "ski043/marshal-factory", "an ssh remote");
 assert.equal(parseOrigin("https://github.com/ski043/factory-demo"), "ski043/factory-demo", "an https remote");
@@ -95,16 +123,28 @@ assert.equal(parseHeartbeat(null), null, "no heartbeat at all");
 
 const configured = await identify("lane-1");
 assert.deepEqual([configured.id, configured.idFrom], ["lane-1", "config"], "the config id wins");
-const path = process.env.PATH;
-process.env.PATH = "/nonexistent";
-try {
-  assert.deepEqual(
-    await identify(),
-    { id: `hostname:${hostname()}`, name: hostname(), idFrom: "hostname" },
-    "without ioreg the runner falls back to the host name instead of crashing",
-  );
-} finally {
-  process.env.PATH = path;
+if (process.platform === "linux") {
+  assert.equal(configured.name, hostname(), "linux shows the host name even when the config id wins");
+  let machineId: string | undefined;
+  try {
+    machineId = readFileSync("/etc/machine-id", "utf8");
+  } catch {
+    machineId = undefined;
+  }
+  assert.deepEqual(await identify(), machineFromMachineId(hostname(), machineId), "linux identify reads /etc/machine-id");
+}
+if (process.platform === "darwin") {
+  const path = process.env.PATH;
+  process.env.PATH = "/nonexistent";
+  try {
+    assert.deepEqual(
+      await identify(),
+      { id: `hostname:${hostname()}`, name: hostname(), idFrom: "hostname" },
+      "without ioreg the runner falls back to the host name instead of crashing",
+    );
+  } finally {
+    process.env.PATH = path;
+  }
 }
 
 const at = new Date("2026-10-24T12:00:00Z");
