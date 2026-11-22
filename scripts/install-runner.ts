@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { renderRunnerUnit, renderT3Unit, RUNNER_SERVICE, runnerLogPath, T3_SERVICE, unitRestartRequired, type UnitEnv } from "../lib/runner-service";
+import { renderRunnerUnit, renderT3Unit, RUNNER_SERVICE, runnerLogPath, T3_SERVICE, unitRestartRequired, unitsToUninstall, type UnitEnv } from "../lib/runner-service";
 
 // Installs the runner so it stays up: a launchd LaunchAgent on macOS, a systemd user service on
 // Linux. Both restart it when it exits and append its log to the per-OS path in lib/runner-service.ts.
@@ -153,11 +153,9 @@ function linuxMain(): never {
   const uninstall = process.argv.includes("--uninstall");
   const withT3 = process.argv.includes("--with-t3");
   if (uninstall) {
-    const runner = removeUnit(RUNNER_SERVICE);
-    const t3 = removeUnit(T3_SERVICE);
+    const names = unitsToUninstall(withT3).filter(removeUnit);
     systemctl(["daemon-reload"]);
-    spawnSync("systemctl", ["--user", "reset-failed", RUNNER_SERVICE, T3_SERVICE], { encoding: "utf8" });
-    const names = [runner ? RUNNER_SERVICE : undefined, t3 ? T3_SERVICE : undefined].filter(Boolean);
+    spawnSync("systemctl", ["--user", "reset-failed", ...unitsToUninstall(withT3)], { encoding: "utf8" });
     console.log(names.length > 0 ? `stopped and removed ${names.join(" and ")}` : `no ${RUNNER_SERVICE} unit was installed`);
     process.exit(0);
   }

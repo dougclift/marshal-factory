@@ -1,6 +1,6 @@
 import "./test-guard";
 import assert from "node:assert/strict";
-import { renderRunnerUnit, renderT3Unit, runnerLogPath, unitRestartRequired } from "../lib/runner-service";
+import { renderRunnerUnit, renderT3Unit, RUNNER_SERVICE, runnerLogPath, T3_SERVICE, unitRestartRequired, unitsToUninstall } from "../lib/runner-service";
 
 assert.equal(runnerLogPath("darwin", "/Users/me"), "/Users/me/Library/Logs/marshal-factory/runner.log", "macOS keeps the launchd log path");
 assert.equal(runnerLogPath("linux", "/home/me"), "/home/me/.local/state/marshal-factory/runner.log", "linux appends under the state dir");
@@ -34,5 +34,7 @@ assert.equal(unitRestartRequired(false, true), false, "an unchanged unit does no
 assert.equal(unitRestartRequired(true, false), false, "a new unit is started by enable --now, not restarted");
 assert.equal(unitRestartRequired(true, true), true, "a changed unit restarts the running service");
 assert.equal(unitRestartRequired(false, false), false);
+assert.deepEqual(unitsToUninstall(false), [RUNNER_SERVICE], "uninstall leaves the t3 unit, so a rollout can reinstall the runner alone");
+assert.deepEqual(unitsToUninstall(true), [RUNNER_SERVICE, T3_SERVICE], "--with-t3 on uninstall removes the t3 unit too");
 
 console.log("runner service regressions passed");

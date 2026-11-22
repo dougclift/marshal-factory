@@ -21,6 +21,14 @@ export type UnitEnv = { path: string; home: string; t3?: string };
 /** Restart a user service only when its unit file changed and it was already running. */
 export const unitRestartRequired = (changed: boolean, wasActive: boolean) => changed && wasActive;
 
+/**
+ * `--uninstall` removes the runner unit. The T3 unit stays, so a rollout that stops and reinstalls
+ * the runner without `--with-t3` does not drop `t3 serve`. Pass `--with-t3` to remove that unit too.
+ */
+export function unitsToUninstall(withT3: boolean) {
+  return withT3 ? [RUNNER_SERVICE, T3_SERVICE] : [RUNNER_SERVICE];
+}
+
 const escapeSystemd = (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
 const quote = (value: string) => `"${escapeSystemd(value)}"`;
 const safePath = (value: string) => /^[A-Za-z0-9._/@+-]+$/.test(value);
