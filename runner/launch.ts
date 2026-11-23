@@ -16,14 +16,16 @@ import type { JobSource } from "../lib/sources/types";
 import type { Execution } from "../lib/execution";
 import type { HarnessChoice } from "../lib/settings";
 import type { RepoSettingsRow } from "../db/schema";
+import { machineMayClaim, placementOf } from "../lib/placement";
 import { routeRepo, withRepoDefaults, type Registry } from "../lib/repositories";
-import type { TicketRecord } from "../lib/ticket-overrides";
+import { ticketOverrides, type TicketRecord } from "../lib/ticket-overrides";
 import { sourceFor } from "../lib/sources";
 import {
   bindThread,
   claimLaunch,
   config,
   factoryCheckouts,
+  knownMachines,
   launchSettings,
   leaseCodexSlot,
   machineInFlight,
@@ -238,6 +240,7 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
   const slot = { id: machine.id, repos, maxInFlight: config.factory.maxInFlight };
   const settings = await launchSettings();
   const harnesses = await overrideRuntime.harnesses();
+  const listed = await knownMachines();
   const can = capabilities();
   const planned: (LaunchEntry & { execution: Execution })[] = [];
   const waiting: { key: string; reason: string }[] = [];
@@ -246,10 +249,22 @@ export async function launchQueued(onWorktree: (check: Record<string, unknown>) 
     const asked = sourceFor(job.source).overrides(job.source_state);
     const { defaults, problems } = withRepoDefaults(settings, registry.find((r) => r.repo === job.repo), harnesses);
     if (problems.length > 0 && !repoDefaults.some((d) => d.repo === job.repo)) repoDefaults.push({ repo: job.repo, problems });
+    const ticket = ticketOverrides(asked, harnesses, listed);
+    const placement = placementOf(ticket, job.target_machine, defaults.execution);
+    // Another machine's pin is not ours. A place this runner does not launch stays queued for one that does.
+    if (placement.targetMachine && placement.targetMachine !== machine.id) continue;
+    if (!machineMayClaim(placement, machine.id, config.factory.executions)) {
+      waiting.push({ key: entry.key, reason: `this runner does not launch ${placement.execution} jobs` });
+      continue;
+    }
     const row = registry.find((r) => r.repo === job.repo);
     const image = repoImage(row, null);
     const modal = can.modal ?? (image.kind === "blocked" ? image.reason : null);
-    const plan = planLaunch(asked, defaults, harnesses, { ...can, modal, checkout: checkouts.has(job.repo) });
+    const plan = planLaunch(asked, defaults, harnesses, { ...can, modal, checkout: checkouts.has(job.repo) }, placement.targetMachine !== null, listed);
+    if (plan.kind === "launch" && !config.factory.executions.includes(plan.execution)) {
+      waiting.push({ key: entry.key, reason: `this runner does not launch ${plan.execution} jobs` });
+      continue;
+    }
     switch (plan.kind) {
       case "launch": {
         // The claim routed the job already; a Repository label that could not apply is told like any other fallback.

@@ -56,7 +56,7 @@ const deps = { file: file as never, harnesses, registry: registry as never };
 
 const secret = "ingest-secret";
 const post = (body: unknown, authorization?: string) =>
-  handleFileJob(new Request("https://panel.test/api/jobs/file", { method: "POST", headers: { ...(authorization ? { authorization } : {}), "content-type": "application/json" }, body: JSON.stringify(body) }), { secret, file: file as never, harnesses, registry: registry as never });
+  handleFileJob(new Request("https://panel.test/api/jobs/file", { method: "POST", headers: { ...(authorization ? { authorization } : {}), "content-type": "application/json" }, body: JSON.stringify(body) }), { secret, file: file as never, harnesses, registry: registry as never, machines: async () => [] });
 
 assert.equal(bearerMatches(null, undefined), false, "a missing secret never matches");
 assert.equal(bearerMatches("Bearer ingest-secret", undefined), false);
@@ -66,7 +66,7 @@ assert.equal(bearerMatches("Bearer ingest-secretx", secret), false, "a different
 
 assert.equal((await post({ title: "Show the count" }, undefined)).status, 401, "no credential is refused");
 assert.equal((await post({ title: "Show the count" }, "Bearer wrong")).status, 401, "the wrong secret is refused");
-assert.equal((await handleFileJob(new Request("https://panel.test/api/jobs/file", { method: "POST", body: "{}" }), { secret: undefined, file: file as never, harnesses, registry: registry as never })).status, 401, "an unset secret refuses every caller");
+assert.equal((await handleFileJob(new Request("https://panel.test/api/jobs/file", { method: "POST", body: "{}" }), { secret: undefined, file: file as never, harnesses, registry: registry as never, machines: async () => [] })).status, 401, "an unset secret refuses every caller");
 
 const bad = async (body: unknown, status: number) => assert.equal((await post(body, `Bearer ${secret}`)).status, status);
 await bad({}, 400);

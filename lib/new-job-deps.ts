@@ -1,7 +1,7 @@
 import { db } from "@/db/client";
 import { machines } from "@/db/schema";
 import { auth } from "@/lib/auth/server";
-import { reportedHarnesses } from "@/lib/machine";
+import { parseInventory, reportedHarnesses } from "@/lib/machine";
 import { readRegistry } from "@/lib/repositories";
 import type { NewJobDeps } from "@/lib/new-job";
 import { defaultFilingSource, fileInto } from "@/lib/sources";
@@ -12,4 +12,10 @@ export const newJobDeps: NewJobDeps = {
   file: (draft) => fileInto(draft.source ?? defaultFilingSource(), draft),
   harnesses: async () => reportedHarnesses(await db.select().from(machines), Date.now()),
   registry: () => readRegistry(db),
+  machines: async () =>
+    (await db.select({ id: machines.id, name: machines.name, inventory: machines.inventory }).from(machines)).map((machine) => ({
+      id: machine.id,
+      name: machine.name,
+      executions: parseInventory(machine.inventory)?.executions,
+    })),
 };

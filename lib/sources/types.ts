@@ -23,6 +23,8 @@ export type JobDraft<S extends JobSource = JobSource> = {
   writeback: WritebackOf<S>;
   /** Merged over the stored state on a reclaim, so state the adapter accumulated survives. */
   sourceState: SourceStateDraftOf<S>;
+  /** A pin stored on the source row, such as queue_items.target_machine. A label pin is resolved separately. */
+  targetMachine?: string | null;
 };
 
 /** The source no longer has the job's item, or this key can't see it; retrying changes nothing. */
@@ -109,6 +111,8 @@ export type FileDraft = {
    * Unset means the default filing source.
    */
   source?: string;
+  /** The machines.id this job is pinned to. The queue stores it on the row; Linear carries the machine as a Runs on label. */
+  targetMachine?: string;
 };
 export type ImageFile = { filename: string; contentType: string; bytes: Uint8Array<ArrayBuffer> };
 export type FiledJob = { key: string; url: string; /** The job id (`<source>:<external id>`) once the runner claims it. */ id?: string };

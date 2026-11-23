@@ -166,6 +166,8 @@ export const jobs = pgTable(
     model: text("model"),
     /** Where this attempt's thread was launched; null before a launch and for launches recorded before it was kept. */
     execution: text("execution").$type<Execution>(),
+    /** The machines.id this job is pinned to. Null means any runner that can run it may claim it. A pin runs locally on that machine. */
+    target_machine: text("target_machine"),
     /** What the ticket's override labels asked for at launch and each fallback the runner took instead; see lib/ticket-overrides.ts. */
     ticket_overrides: jsonb("ticket_overrides").$type<TicketRecord>(),
     session_id: text("session_id"),
@@ -283,6 +285,8 @@ export const queueItems = pgTable(
     /** Todo, In Progress, In Review, Done or Canceled. */
     state: text("state").notNull(),
     labels: jsonb("labels").$type<QueueLabel[]>().notNull(),
+    /** The machines.id this queue job is pinned to; null leaves the runner to the Runs on label, or to Settings. */
+    target_machine: text("target_machine"),
     url: text("url").notNull(),
     created_at: ts("created_at").notNull(),
     updated_at: ts("updated_at").notNull(),
@@ -536,6 +540,8 @@ export const incomingJobs = pgTable(
     /** A harness's provider instance id; null leaves it to Settings. */
     provider: text("provider"),
     execution: text("execution").$type<Execution>(),
+    /** The machines.id this draft is pinned to. Set instead of execution; filing it runs the job locally on that machine. */
+    target_machine: text("target_machine"),
     /** The repo's full name; null means the default repo. */
     repo: text("repo"),
     /** The filing source it goes to; null means the default. Images in the description were stored there. */

@@ -34,6 +34,7 @@ export function IncomingColumn({
         {jobs.map((job) => {
           const images = job.description.match(IMAGE)?.length ?? 0;
           const repo = job.repo ? repoLabels?.get(job.repo) : undefined;
+          const machineName = job.target_machine ? (form.machines.find((machine) => machine.id === job.target_machine)?.name ?? job.target_machine) : undefined;
           return (
             <button
               key={job.id}
@@ -52,10 +53,16 @@ export function IncomingColumn({
                 {repo && <span className="min-w-0 truncate">{repo}</span>}
                 <span className="ms-auto flex shrink-0 items-center gap-2">
                   {job.provider && <span>{harnessName(job.provider)}</span>}
-                  {job.execution && (
-                    <span title={RUNS_ON_LABELS[job.execution]}>
-                      {job.execution === "modal" ? <CloudIcon className="size-3.5" aria-label={RUNS_ON_LABELS.modal} /> : <MonitorIcon className="size-3.5" aria-label={RUNS_ON_LABELS.local} />}
+                  {machineName ? (
+                    <span title={machineName}>
+                      <MonitorIcon className="size-3.5" aria-label={machineName} />
                     </span>
+                  ) : (
+                    job.execution && (
+                      <span title={RUNS_ON_LABELS[job.execution]}>
+                        {job.execution === "modal" ? <CloudIcon className="size-3.5" aria-label={RUNS_ON_LABELS.modal} /> : <MonitorIcon className="size-3.5" aria-label={RUNS_ON_LABELS.local} />}
+                      </span>
+                    )
                   )}
                   {images > 0 && (
                     <span className="flex items-center gap-0.5" title={`${images} ${images === 1 ? "image" : "images"}`}>

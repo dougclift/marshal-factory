@@ -7,6 +7,7 @@ export async function POST(request: Request) {
     secret: process.env.FACTORY_INGEST_SECRET,
     registry: newJobDeps.registry,
     harnesses: newJobDeps.harnesses,
+    machines: () => newJobDeps.machines?.() ?? Promise.resolve([]),
     file: newJobDeps.file,
   });
 }

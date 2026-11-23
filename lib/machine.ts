@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { executionSchema } from "./execution";
 import { harnessSchema, type Harness } from "./harness";
 
 export const UNKNOWN = "unknown";
@@ -124,6 +125,8 @@ export const inventorySchema = z.object({
   sandbox: known(sandboxReadinessSchema).optional(),
   /** Whether the runner's env has SLACK_BOT_TOKEN and SLACK_OWNER_USER_ID; never their values. Optional for the same reason. */
   slack: known(slackReadinessSchema).optional(),
+  /** Which places this runner claims. Absent on an inventory stored before it was reported. */
+  executions: z.array(executionSchema).optional(),
 });
 export type Inventory = z.infer<typeof inventorySchema>;
 

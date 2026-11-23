@@ -1,11 +1,14 @@
+"use client";
+
 import type { ReactNode } from "react";
 import type { AgentRow, MachineRow, RunRow } from "@/db/schema";
 import { cn } from "@/lib/utils";
 import { STAGES } from "@/lib/events";
 import { t3ThreadLink } from "@/lib/machine";
-import { t3EnvironmentId, type BoardCard } from "./cards";
+import { t3EnvironmentId, targetNote, type BoardCard } from "./cards";
 import { StageCard } from "./run-card";
 import { STAGE_META } from "./stages";
+import { useAfterHydration } from "./time";
 
 /** A local thread whose stop couldn't be confirmed opens in its machine's T3; a sandbox's has no direct link. */
 function stopT3Href(card: BoardCard, machines: ReadonlyMap<string, MachineRow>) {
@@ -30,8 +33,10 @@ export function Board({
   /** The Incoming column, ahead of Queued. */
   incoming?: ReactNode;
 }) {
+  const now = useAfterHydration(() => Date.now(), 0);
   const agentsOf = (runs: readonly RunRow[]) =>
     runs.flatMap((r) => agentsBySession.get(r.session_id) ?? []);
+  const targetOf = (card: BoardCard) => (card.targetMachineId ? targetNote(machines.get(card.targetMachineId), card.targetMachineId, now) : null);
   const columns = STAGES.filter(
     (stage) => stage !== "failed" || cards.some((c) => c.stage === "failed"),
   );
@@ -60,6 +65,7 @@ export function Board({
                   key={card.id}
                   card={card}
                   machineName={card.machineId && (machines.get(card.machineId)?.name ?? card.machineId)}
+                  target={targetOf(card)}
                   agents={agentsOf(card.runs)}
                   selected={card.runs.some((r) => r.session_id === selected)}
                   repoLabel={card.repo ? repoLabels?.get(card.repo) : undefined}

@@ -9,6 +9,7 @@ import { filingSources, type FilingChoice } from "@/lib/sources";
 import { SLACK_COMMAND, SLACK_SHORTCUT_CALLBACK_ID, type SlackMessage } from "@/lib/slack";
 import type { InteractionDeps } from "@/lib/slack-interactions";
 import { ephemeral, invalidSignature, NO_TOKEN, NOT_OWNER, parseJson, safeMessage, signedBody, uuidFrom } from "@/lib/slack-request";
+import { runsLocal, type NamedMachine } from "@/lib/placement";
 import { RUNS_ON_LABELS } from "@/lib/ticket-overrides";
 
 // Filing jobs from Slack: `/factory` (app/api/slack/commands) and the "Send to factory" message
@@ -77,12 +78,16 @@ export function shortcutPrefill(text: string, permalink: string | null): Prefill
 const metaSchema = z.object({ responseUrl: z.string().optional(), channel: z.string().optional(), threadTs: z.string().optional() });
 type Meta = z.infer<typeof metaSchema>;
 
-export type ModalOptions = { registry: Registry; harnesses: readonly Harness[]; sources: readonly FilingChoice[] };
+export type ModalOptions = { registry: Registry; harnesses: readonly Harness[]; sources: readonly FilingChoice[]; machines: readonly NamedMachine[] };
 
-/** The repositories and harnesses the panel's form offers. */
+/** The repositories, harnesses and machines the panel's form offers. */
 async function modalOptions(deps: InteractionDeps): Promise<ModalOptions> {
-  const [registry, harnesses] = await Promise.all([deps.inbox.newJob.registry(), deps.inbox.newJob.harnesses()]);
-  return { registry, harnesses: (harnesses ?? []).filter((h) => h.enabled), sources: filingSources() };
+  const [registry, harnesses, machines] = await Promise.all([
+    deps.inbox.newJob.registry(),
+    deps.inbox.newJob.harnesses(),
+    deps.inbox.newJob.machines?.() ?? [],
+  ]);
+  return { registry, harnesses: (harnesses ?? []).filter((h) => h.enabled), sources: filingSources(), machines };
 }
 
 const plain = (text: string) => ({ type: "plain_text", text });
@@ -161,7 +166,12 @@ export function renderNewJobModal(prefill: Prefill, options: ModalOptions, meta:
         : []),
       ...(repos.length > 0 ? [select(NEW_JOB_BLOCKS.repo, "Repository", repos, initialRepo, "Goes on the issue as its Repository label, the default one included.")] : []),
       select(NEW_JOB_BLOCKS.harness, "Harness", [settingsDefault, ...options.harnesses.map((h) => option(h.id, h.name))], settingsDefault),
-      select(NEW_JOB_BLOCKS.runsOn, "Runs on", [settingsDefault, ...EXECUTIONS.map((e) => option(e, RUNS_ON_LABELS[e]))], settingsDefault),
+      select(
+        NEW_JOB_BLOCKS.runsOn,
+        "Runs on",
+        [settingsDefault, ...EXECUTIONS.map((e) => option(e, RUNS_ON_LABELS[e])), ...options.machines.filter(runsLocal).map((machine) => option(`machine:${machine.id}`, machine.name))],
+        settingsDefault,
+      ),
     ],
   };
 }
@@ -254,13 +264,16 @@ export function newJobInput(viewId: string, values: z.infer<typeof stateSchema>)
     const value = input(block)?.selected_option?.value;
     return value && value !== SETTINGS_DEFAULT ? value : undefined;
   };
+  const runsOn = pick(NEW_JOB_BLOCKS.runsOn);
+  const targetMachine = runsOn?.startsWith("machine:") ? runsOn.slice("machine:".length) : undefined;
   return {
     title: input(NEW_JOB_BLOCKS.title)?.value ?? "",
     description: input(NEW_JOB_BLOCKS.description)?.value ?? "",
     requestId: newJobRequestId(viewId),
     repo: pick(NEW_JOB_BLOCKS.repo),
     provider: pick(NEW_JOB_BLOCKS.harness),
-    execution: pick(NEW_JOB_BLOCKS.runsOn),
+    execution: targetMachine ? undefined : runsOn === "local" || runsOn === "modal" ? runsOn : undefined,
+    ...(targetMachine && { targetMachine }),
     source: input(NEW_JOB_BLOCKS.source)?.selected_option?.value,
   };
 }
@@ -273,6 +286,7 @@ const BLOCK_OF: Record<keyof NewJob, string> = {
   repo: NEW_JOB_BLOCKS.repo,
   provider: NEW_JOB_BLOCKS.harness,
   execution: NEW_JOB_BLOCKS.runsOn,
+  targetMachine: NEW_JOB_BLOCKS.runsOn,
   source: NEW_JOB_BLOCKS.source,
 };
 

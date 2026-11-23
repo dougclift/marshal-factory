@@ -1,6 +1,6 @@
 import { and, asc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/client";
-import { agents, jobs, runs, type JobRow, type RunRow } from "../db/schema";
+import { agents, jobs, machines, runs, type JobRow, type RunRow } from "../db/schema";
 import { STAGES, type Stage, type Usage } from "../lib/events";
 import { allSources, jobId, parseJob, parseJobs, sourceFor } from "../lib/sources";
 import { parseJobId, SOURCE_SHAPES } from "../lib/sources/shapes";
@@ -19,7 +19,9 @@ import { isTracked } from "../lib/harness";
 import { readHarnesses } from "../lib/t3-state";
 import { readSettings, resolveExecution, resolveHarness, type HarnessChoice } from "../lib/settings";
 import type { Execution } from "../lib/execution";
-import type { TicketRecord } from "../lib/ticket-overrides";
+import { reportedHarnesses } from "../lib/machine";
+import { machineMayClaim, placementOf } from "../lib/placement";
+import { ticketOverrides, type TicketRecord } from "../lib/ticket-overrides";
 import { readRegistry, registerRepos, routeRepo, type Registry } from "../lib/repositories";
 import { ensureAwake, HostGoneError, hosts, isHibernated, WakeDeferredError, type JobHost } from "../lib/host";
 import { modalHost } from "../lib/modal-host";
@@ -520,30 +522,50 @@ export async function claim({
   return claimed;
 }
 
+/** Runners a job can be pinned to, by id and display name. */
+export async function knownMachines() {
+  return db.select({ id: machines.id, name: machines.name }).from(machines);
+}
+
 async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; draft: JobDraft }[], repos: () => Promise<string[]>, registry: () => Promise<Registry>) {
-  const [checkouts, known] = await Promise.all([repos(), registry()]);
+  const [checkouts, known, me, machineRows, settings] = await Promise.all([repos(), registry(), thisMachine(), db.select().from(machines), launchSettings()]);
+  const listed = machineRows.map((machine) => ({ id: machine.id, name: machine.name }));
+  const reported = reportedHarnesses(machineRows, Date.now());
   const targets = [...new Set([...checkouts, ...known.filter((r) => r.enabled).map((r) => r.repo)])];
   if (targets.length === 0) throw new Error("no repository is registered and factory.repos is empty, so there is no repository to claim work for");
   const targetOf = (source: SourceAdapter<JobSource>, draft: JobDraft) => routeRepo(source.overrides(draft.sourceState), known).repo ?? checkouts[0] ?? targets[0]!;
-  const me = await mine();
+  const mineSql = eq(jobs.machine_id, me.id);
   return db.transaction(async (tx) => {
     // The lock's name predates other sources; runners on older code take the same one.
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext('marshal-factory linear-poll'))`);
-    const [{ count }] = await tx
+    const [{ count: held }] = await tx
       .select({ count: sql<number>`count(*)::int` })
       .from(jobs)
-      .where(
-        or(
-          and(me, or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)),
-          and(isNull(jobs.machine_id), eq(jobs.stage, "queued"), inArray(jobs.repo, targets)),
-        ),
-      );
-    let inFlight = count;
+      .where(and(mineSql, or(inArray(jobs.stage, IN_FLIGHT), stoppingSql)));
+    // Queued jobs no machine holds yet count only when this runner would launch them. A Modal-only
+    // runner does not fill its slots with local jobs the Mac has not started.
+    const waiting = await tx
+      .select({ source: jobs.source, source_state: jobs.source_state, repo: jobs.repo, target_machine: jobs.target_machine })
+      .from(jobs)
+      .where(and(isNull(jobs.machine_id), eq(jobs.stage, "queued"), inArray(jobs.repo, targets)));
+    let inFlight = held;
+    for (const job of waiting) {
+      const state = SOURCE_SHAPES[job.source].sourceState.safeParse(job.source_state);
+      const asked = state.success ? sourceFor(job.source).overrides(state.data) : { harness: [], runsOn: [], repository: [] };
+      const ticket = ticketOverrides(asked, reported, listed);
+      const fallback = known.find((repo) => repo.repo === job.repo)?.execution ?? settings.execution;
+      if (machineMayClaim(placementOf(ticket, job.target_machine, fallback), me.id, config.factory.executions)) inFlight++;
+    }
     const claimed: string[] = [];
     for (const { source, draft } of ready) {
       if (inFlight >= config.factory.maxInFlight) break;
       const now = new Date();
       const target = targetOf(source, draft);
+      const ticket = ticketOverrides(source.overrides(draft.sourceState), reported, listed);
+      const fallback = known.find((repo) => repo.repo === target)?.execution ?? settings.execution;
+      const placement = placementOf(ticket, draft.targetMachine, fallback);
+      // A pin, or a place this runner does not launch, stays for a runner that can take it.
+      if (!machineMayClaim(placement, me.id, config.factory.executions)) continue;
       const inserted = await tx
         .insert(jobs)
         .values({
@@ -555,6 +577,7 @@ async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; d
           url: draft.url,
           description: draft.description,
           repo: target,
+          target_machine: placement.targetMachine,
           writeback: draft.writeback,
           source_state: draft.sourceState,
           // Unused, but NOT NULL without a default until migration 0034 has run.
@@ -580,6 +603,7 @@ async function claimDrafts(ready: readonly { source: SourceAdapter<JobSource>; d
             provider: null,
             model: null,
             execution: null,
+            target_machine: placement.targetMachine,
             ticket_overrides: null,
             session_id: null,
             nudged_at: null,
@@ -842,6 +866,8 @@ export async function launchSettings() {
  * The capacity count is read in the same statement, which holds because one machine runs one
  * runner and its launches run one at a time. The harness, where it runs and the ticket's overrides
  * are recorded with the marker, so a launch that launch recovery binds later still says what it ran on.
+ * A job pinned to a machine is claimed only by that machine, and only for a local launch. A runner
+ * claims a place only when `factory.executions` lists it.
  */
 export async function claimLaunch(
   key: string,
@@ -851,6 +877,10 @@ export async function claimLaunch(
   where?: { execution: Execution; ticket: TicketRecord | null },
 ) {
   if (machine.repos.length === 0) return false;
+  if (where && !config.factory.executions.includes(where.execution)) return false;
+  // A pinned job runs locally on its machine. A modal launch never takes one, and another machine never takes it.
+  const targetSql =
+    where?.execution === "modal" ? isNull(jobs.target_machine) : or(isNull(jobs.target_machine), eq(jobs.target_machine, machine.id));
   const working = sql.join(IN_FLIGHT.map((stage) => sql`${stage}`), sql`, `);
   const claimed = await db
     .update(jobs)
@@ -867,6 +897,7 @@ export async function claimLaunch(
         isNull(jobs.session_id),
         isNull(jobs.machine_id),
         inArray(jobs.repo, [...machine.repos]),
+        targetSql,
         sql`(select count(*) from jobs held where held.machine_id = ${machine.id} and (held.stage in (${working}) or ${heldStoppingSql})) < ${machine.maxInFlight}`,
       ),
     )

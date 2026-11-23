@@ -17,7 +17,7 @@ import { sourceLink } from "@/lib/sources/shapes";
 import { parseStop, stopLine, stopView } from "@/lib/stop";
 import { runFeedPath } from "@/lib/run-links";
 import { RUNS_ON_LABELS, ticketRecordSchema } from "@/lib/ticket-overrides";
-import { runsOn } from "./cards";
+import { runsOn, targetNote } from "./cards";
 import { AgentTree } from "./agent-tree";
 import { useArchiveAction, type ArchiveAction } from "./archive-action";
 import { EventFeed } from "./event-feed";
@@ -32,7 +32,7 @@ import { OpenSandboxT3, useSandboxT3 } from "./open-sandbox-t3";
 import { SandboxSection } from "./sandbox-section";
 import { useFeed, type Feed } from "./sealed";
 import { StageTimeline } from "./stage-timeline";
-import { Time } from "./time";
+import { Time, useAfterHydration } from "./time";
 import { STAGE_META } from "./stages";
 
 /** The job's audit feed, read once for both the sandbox's last login check and the audit log. */
@@ -182,6 +182,8 @@ export function RunDetail({
   evidence,
   job,
   machine,
+  /** The machine the job is pinned to, when one is set. Absent when the row is gone. */
+  target,
   harnesses,
   jobSpend,
   closeHref,
@@ -198,6 +200,7 @@ export function RunDetail({
   stagesPath: string;
   job: JobRow | undefined;
   machine: MachineRow | undefined;
+  target: { id: string; machine: MachineRow | undefined } | undefined;
   run: RunRow;
   agents: Feed<AgentRow>;
   events: Feed<EventRow>;
@@ -208,6 +211,8 @@ export function RunDetail({
   const { rows: stageRows } = useFeed(stages, stagesPath);
   const stage = job?.stage ?? run.stage;
   const link = job && sourceLink(job);
+  const now = useAfterHydration(() => Date.now(), 0);
+  const pinned = target && targetNote(target.machine, target.id, now);
   const machineName = machine?.name ?? job?.machine_id ?? null;
   const t3 = machine && parseInventory(machine.inventory)?.t3;
   const environmentId = t3 && t3 !== UNKNOWN ? t3.environmentId : null;
@@ -279,6 +284,7 @@ export function RunDetail({
           )}
           {run.repo && <span className="min-w-0 truncate">{run.repo}</span>}
           {place && <span>{place}</span>}
+          {pinned && <span className={pinned.stale ? "text-warning" : undefined}>{pinned.text}</span>}
           <span className="font-mono">{spend}</span>
         </p>
         {job && <TicketOverrides job={job} harnesses={harnesses} />}

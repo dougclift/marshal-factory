@@ -2,6 +2,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import type { Harness } from "./harness";
 import { fileNewJob, type NewJobDeps } from "./new-job";
+import { matchMachine, type NamedMachine } from "./placement";
 // An assistant files a queue job over HTTP. The shared ingest secret is the credential; the panel
 // session is not. The route is /api/jobs/file, which the session proxy does not cover.
 
@@ -13,6 +14,8 @@ const bodySchema = z.object({
   /** A harness provider id, or its display name. */
   harness: z.string().trim().min(1).optional(),
   runsOn: z.enum(["mac", "modal"]).optional(),
+  /** A machine id or display name. Pins the job to that machine and runs it locally. */
+  machine: z.string().trim().min(1).optional(),
   /** Send the same id again to get the first job back instead of a second one. */
   requestId: z.uuid().optional(),
 });
@@ -23,6 +26,7 @@ export type FileJobHttpDeps = {
   secret: string | undefined;
   registry: NewJobDeps["registry"];
   harnesses: NewJobDeps["harnesses"];
+  machines: () => Promise<readonly NamedMachine[]>;
   file: NewJobDeps["file"];
 };
 
@@ -45,15 +49,33 @@ export async function handleFileJob(request: Request, deps: FileJobHttpDeps): Pr
   const json = await request.json().catch(() => undefined);
   const parsed = bodySchema.safeParse(json);
   if (!parsed.success) return Response.json({ error: parsed.error.issues[0]?.message ?? "The job is not valid." }, { status: 400 });
-  const { title, description, repo, harness, runsOn, requestId } = parsed.data;
+  const { title, description, repo, harness, runsOn, machine, requestId } = parsed.data;
+  if (machine && runsOn === "modal") {
+    return Response.json({ error: "A machine runs the job locally. Leave runsOn off, or set it to mac." }, { status: 400 });
+  }
   let provider: string | undefined;
   if (harness) {
     provider = harnessId(harness, await deps.harnesses());
     if (!provider) return Response.json({ error: `No machine reports an enabled harness ${harness}.` }, { status: 400 });
   }
+  let targetMachine: string | undefined;
+  if (machine) {
+    const found = matchMachine(await deps.machines(), machine);
+    if ("error" in found) return Response.json({ error: found.error }, { status: 400 });
+    targetMachine = found.machine.id;
+  }
   const outcome = await fileNewJob(
-    { file: deps.file, harnesses: deps.harnesses, registry: deps.registry },
-    { title, description: description ?? "", requestId: requestId ?? randomUUID(), repo, provider, execution: runsOn ? RUNS_ON[runsOn] : undefined, source: "queue" },
+    { file: deps.file, harnesses: deps.harnesses, registry: deps.registry, machines: deps.machines },
+    {
+      title,
+      description: description ?? "",
+      requestId: requestId ?? randomUUID(),
+      repo,
+      provider,
+      execution: targetMachine ? undefined : runsOn ? RUNS_ON[runsOn] : undefined,
+      ...(targetMachine && { targetMachine }),
+      source: "queue",
+    },
   );
   if (!outcome.ok) return Response.json({ error: outcome.message }, { status: outcome.status });
   if (!outcome.id) return Response.json({ error: "the queue did not return a job id" }, { status: 502 });

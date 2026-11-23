@@ -9,6 +9,7 @@ import { allSources, sourceFor } from "../lib/sources";
 import type { Job, JobSource, SourceAdapter } from "../lib/sources/types";
 import { readT3Runtime } from "../lib/t3-state";
 import { desiredRepositoryGroup, readRegistry, type Registry } from "../lib/repositories";
+import type { NamedMachine } from "../lib/placement";
 import { desiredLabelGroups, ticketOverrides, type SourceOverrides, type TicketRecord } from "../lib/ticket-overrides";
 import { config } from "./config";
 import { thisMachine } from "./heartbeat";
@@ -50,8 +51,12 @@ export function planLaunch(
   settings: { harness: EffectiveHarness; execution: Execution },
   harnesses: readonly Harness[] | null,
   can: Capabilities,
+  /** A job pinned to a machine runs locally there, and does not fall back to a cloud sandbox. */
+  pinned = false,
+  /** Runners a Runs on label may name. Without them a machine label falls back to Settings. */
+  machines: readonly NamedMachine[] = [],
 ): LaunchPlan {
-  const asked = ticketOverrides(overrides, harnesses);
+  const asked = ticketOverrides(overrides, harnesses, machines);
   const nameOf = (provider: string) => harnesses?.find((h) => h.id === provider)?.name ?? harnessLabel(provider);
   const notes = [...asked.problems];
 
@@ -65,6 +70,18 @@ export function planLaunch(
   const inSandbox = sandboxHarness(harness, can.driverOf(harness.provider), can.claude, can.codexModel);
   const modal = can.modal ?? (needsCodexSlot(inSandbox.choice.provider) && !can.codexSlot ? "no Codex login slot is usable" : null);
   const noLocal = !can.local ? "this runner's T3 is not running" : !can.checkout ? "this runner has no checkout of the repo" : null;
+  if (pinned || asked.targetMachine) {
+    if (noLocal) return { kind: "wait", reason: `${noLocal[0]!.toUpperCase()}${noLocal.slice(1)}, and the job is pinned to this machine` };
+    if (asked.execution === "modal") notes.push("The job is pinned to a machine, so it runs locally.");
+    const execution: Execution = "local";
+    const applied = {
+      ...(asked.provider === harness.provider && { provider: asked.provider }),
+      ...(asked.execution === execution && { execution }),
+      ...(asked.targetMachine && { targetMachine: asked.targetMachine }),
+    };
+    const ticket = Object.keys(applied).length > 0 || notes.length > 0 ? { ...applied, notes } : null;
+    return { kind: "launch", execution, harness, ticket };
+  }
   let execution = asked.execution ?? settings.execution;
   if (asked.execution === "modal" && modal) {
     if (noLocal) return { kind: "wait", reason: `Cloud sandboxes cannot launch on this runner (${modal}) and ${noLocal}` };
@@ -88,6 +105,7 @@ export function planLaunch(
   const applied = {
     ...(asked.provider === harness.provider && { provider: asked.provider }),
     ...(asked.execution === execution && { execution }),
+    ...(asked.targetMachine && execution === "local" && { targetMachine: asked.targetMachine }),
   };
   const ticket = Object.keys(applied).length > 0 || notes.length > 0 ? { ...applied, notes } : null;
   return { kind: "launch", execution, harness, ticket };

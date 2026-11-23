@@ -13,10 +13,15 @@ export const newJobSchema = z.object({
   provider: z.string().trim().min(1).optional(),
   /** Unset files the issue without a Runs on label. */
   execution: executionSchema.optional(),
+  /** A machines.id. The job runs locally on that machine. */
+  targetMachine: z.string().trim().min(1).optional(),
   /** The repo's full name; unset means the default repo. Either way the job gets its Repository label. */
   repo: z.string().trim().min(1).optional(),
   /** A filing source the panel offers. Unset uses the default: Linear when it is configured, otherwise the queue. */
   source: z.string().trim().min(1).optional(),
+}).refine((job) => !(job.targetMachine && job.execution === "modal"), {
+  message: "A job pinned to a machine runs locally, not on Modal.",
+  path: ["targetMachine"],
 });
 export type NewJob = z.infer<typeof newJobSchema>;
 
