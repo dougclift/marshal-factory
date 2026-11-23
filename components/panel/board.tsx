@@ -8,7 +8,10 @@ import { t3ThreadLink } from "@/lib/machine";
 import { t3EnvironmentId, targetNote, type BoardCard } from "./cards";
 import { StageCard } from "./run-card";
 import { STAGE_META } from "./stages";
-import { useAfterHydration } from "./time";
+import { useNow } from "./time";
+
+/** Heartbeats go stale over minutes, so the pin note does not need a finer clock. */
+const CLOCK_TICK_MS = 30_000;
 
 /** A local thread whose stop couldn't be confirmed opens in its machine's T3; a sandbox's has no direct link. */
 function stopT3Href(card: BoardCard, machines: ReadonlyMap<string, MachineRow>) {
@@ -33,7 +36,7 @@ export function Board({
   /** The Incoming column, ahead of Queued. */
   incoming?: ReactNode;
 }) {
-  const now = useAfterHydration(() => Date.now(), 0);
+  const now = useNow(CLOCK_TICK_MS) ?? 0;
   const agentsOf = (runs: readonly RunRow[]) =>
     runs.flatMap((r) => agentsBySession.get(r.session_id) ?? []);
   const targetOf = (card: BoardCard) => (card.targetMachineId ? targetNote(machines.get(card.targetMachineId), card.targetMachineId, now) : null);
