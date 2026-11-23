@@ -23,9 +23,12 @@ import { jobsHref } from "./job-view";
 import { decisionLine } from "./merge-decision";
 import { useRowKeys } from "./row-keys";
 import { STAGE_META } from "./stages";
-import { ShortTime, useAfterHydration } from "./time";
+import { ShortTime, useNow } from "./time";
 
 const spring = { type: "spring", stiffness: 500, damping: 40 } as const;
+
+/** Heartbeats go stale over minutes, so the pin note does not need a finer clock. */
+const CLOCK_TICK_MS = 30_000;
 
 const openHref = (card: BoardCard, archived: boolean) => (card.latest ? jobsHref("list", card.latest.session_id, archived) : null);
 
@@ -123,7 +126,7 @@ export function JobList({
   /** The archive: its rows are restored instead of archived. */
   archived?: boolean;
 }) {
-  const now = useAfterHydration(() => Date.now(), 0);
+  const now = useNow(CLOCK_TICK_MS) ?? 0;
   const listRef = useRef<HTMLDivElement>(null);
   const [closed, setClosed] = useState<readonly Stage[]>([]);
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());

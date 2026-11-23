@@ -4,8 +4,16 @@ import { useState, useSyncExternalStore } from "react";
 
 const noSubscription = () => () => {};
 
-/** Runs `read` only in the browser, so server HTML never bakes in the server's clock or timezone. */
+/**
+ * Runs `read` only in the browser, so server HTML never bakes in the server's clock or timezone.
+ *
+ * `read` is the getSnapshot passed to useSyncExternalStore. It must return the same value on every
+ * call until something notifies React. A read that moves on its own, such as `Date.now`, makes a
+ * client mount (not a hydration) loop and throw: React's "getSnapshot should be cached", error #185.
+ * A clock belongs in `useNow`.
+ */
 export function useAfterHydration<T extends string | number>(
+  /** Stable between calls. Do not read the clock here. */
   read: () => T,
   fallback: T,
 ): T {

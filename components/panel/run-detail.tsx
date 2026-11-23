@@ -32,8 +32,11 @@ import { OpenSandboxT3, useSandboxT3 } from "./open-sandbox-t3";
 import { SandboxSection } from "./sandbox-section";
 import { useFeed, type Feed } from "./sealed";
 import { StageTimeline } from "./stage-timeline";
-import { Time, useAfterHydration } from "./time";
+import { Time, useNow } from "./time";
 import { STAGE_META } from "./stages";
+
+/** Heartbeats go stale over minutes, so the pin note does not need a finer clock. */
+const CLOCK_TICK_MS = 30_000;
 
 /** The job's audit feed, read once for both the sandbox's last login check and the audit log. */
 function JobRecords({ feed, path, job }: { feed: Feed<AuditRow>; path: string; job: JobRow | undefined }) {
@@ -211,7 +214,7 @@ export function RunDetail({
   const { rows: stageRows } = useFeed(stages, stagesPath);
   const stage = job?.stage ?? run.stage;
   const link = job && sourceLink(job);
-  const now = useAfterHydration(() => Date.now(), 0);
+  const now = useNow(CLOCK_TICK_MS) ?? 0;
   const pinned = target && targetNote(target.machine, target.id, now);
   const machineName = machine?.name ?? job?.machine_id ?? null;
   const t3 = machine && parseInventory(machine.inventory)?.t3;
